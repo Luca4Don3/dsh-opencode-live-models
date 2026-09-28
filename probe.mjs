@@ -31,7 +31,8 @@ const ok = (name, pass, detail = '') => results.push({ name, pass, detail })
 
 // 真实数据
 const liveData = fixture('ocg-models.json')
-const LIVE_IDS = liveData.data.map(m => m.id).sort()
+const OCG_LIVE = liveData.data
+const LIVE_IDS = OCG_LIVE.map(m => m.id).sort()
 const PI_DEV = fixture('pi-dev-opencode-go.json')
 const CATALOG_085 = fixture('opencode-go-0.85.1.json')
 const INSTALLED = []
@@ -61,6 +62,10 @@ const installedModels = { list: INSTALLED.slice() }
 const collection = {
   getProvider: (id) => (id === 'opencode-go' ? baseProvider : undefined),
   setProvider: (p) => { patched += 1; Object.assign(baseProvider, p) },
+  // The real pi-ai Models collection has this; without it every read that goes
+  // through the collection silently yields [] and the drift report undercounts
+  // itself — which is exactly how a broken lookup hid behind a green probe.
+  getModels: (id) => (id === 'opencode-go' ? baseProvider.getModels() : []),
 }
 let baseProvider = {
   id: 'opencode-go',
@@ -77,6 +82,7 @@ const ctx = {
   logger: {
     info: (...a) => logs.push(['info', a.join(' ')]),
     warn: (...a) => logs.push(['warn', a.join(' ')]),
+    debug: (...a) => logs.push(['debug', a.join(' ')]),
   },
   emit: (ev) => logs.push(['emit', ev]),
   effect: (fn) => fn(),
@@ -192,23 +198,21 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   // 模型名本身含 '.'（mimo-v2.5），所以锚定到句子结尾而不是 [^.]+
   const named = (reported?.match(/NOT added: (.+?)\. Add them/s)?.[1] ?? '')
     .split(', ').map(x => x.trim()).filter(Boolean)
-  // 首次刷新时 installed 目录仍有全部 27 个，所以「无 descriptor」= live - (pi.dev ∪ 0.85.1) = 14。
-  // refresh 时 described = overlay(pi.dev 29 + fallback 2 = 31) ∪ installed(27) = 43 项中 29 项
-  // 实际 covered = pi.dev∩live(29) + fallback(2) + installed∩live(22) = 43 - 14
-  // described = overlay(pi.dev 29 + fallback 2) ∪ installed(27)；live 43 项中
-  // 9 项三者都没有 descriptor；另有 5 项 installed 有、pi.dev 无，它们在 installed
-  // 快照里**仍可读**（那是已安装目录的事实），所以也被点名为「缺 descriptor」。
-  // 合计 14 —— 插件报告的就是这 14 个，逐个点名，无一遗漏、无一误报。
+  // 「无 descriptor」= live - effective，即网关在服务、但两个来源都给不出描述符的模型。
+  // 这必须是 9 个：另 5 个（glm-5.1、kimi-k2.6、omen-alpha、qwen3.6-plus、qwen3.7-max）
+  // 已安装目录里就有，属于**可用**模型，被点名就是漂移报告在说谎。
   const trulyUnknown = LIVE_IDS.filter(i =>
     !PI_DEV.some(m => m.id === i) && !INSTALLED_IDS.includes(i)
     && i !== 'deepseek-v4.1-flash' && i !== 'space-bunny-free')
-  ok('告警逐个点名了每个 OCG 正在提供但无 descriptor 的模型（9 个完全未知 + 5 个仅目录有）',
-    named.length === 14
+  const onlyInstalled = INSTALLED_IDS.filter(i => !PI_DEV.some(m => m.id === i))
+  ok('告警逐个点名了每个无 descriptor 的模型，且不误报已安装目录已有的模型',
+    named.length === trulyUnknown.length
       && trulyUnknown.every(i => named.includes(i))
+      && !onlyInstalled.some(i => named.includes(i))
       && !named.includes('space-bunny-free')
       && !named.includes('mimo-v2.5')
       && !named.includes('deepseek-v4.1-flash'),
-    `${named.length} 个被点名；其中完全未知 ${trulyUnknown.length} 个全部在内`)
+    `点名 ${named.length} 个 = 完全未知 ${trulyUnknown.length} 个；误报 ${named.filter(i => onlyInstalled.includes(i)).join(',') || '无'}`)
 }
 
 // ── 5. 降级：pi.dev 挂了 ─────────────────────────────────────────────────────
@@ -239,30 +243,424 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     logs.some(([l, m]) => l === 'warn' && m.includes('roster refresh failed')))
 }
 
-// ── 7. 换 roster：下线的模型消失 ─────────────────────────────────────────────
+// ── 6.5 fingerprint：数据没变就不该惊动 DSH ────────────────────────────────
 {
+  mode = 'live'
+  await triggerRefresh()
+  await wait(); await wait()
+  const emitted = logs.filter(([l]) => l === 'emit').length
+  ok('两份上游都返回同一份数据时不 emit adapters-updated', emitted === 0,
+    `emit ${emitted} 次`)
+  ok('无变化走 debug 而不是 info（日志不再每 5 分钟刷屏）',
+    logs.some(([l, m]) => l === 'debug' && m.includes('catalog unchanged')))
+}
+
+// ── 6.6 fingerprint 不得漏掉 UI 可见的字段 ──────────────────────────────────
+{
+  // Price and display name are rendered in the picker, so a remote edit to either
+  // that fails to reach the consumer is a stale-UI bug, not a missed optimization.
+  const mainFetch = globalThis.fetch
+  let reprice = false
+  let addOutput = false
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) {
+      const rows = JSON.parse(JSON.stringify(PI_DEV))
+      const target = rows.find(m => m.id === 'space-bunny-free')
+      if (reprice) {
+        target.cost = { ...target.cost, input: 0.5, output: 1.5 }
+        target.name = 'Space Bunny Free (repriced)'
+      }
+      if (addOutput) {
+        // A field this plugin has never heard of, on a model it does know: it is
+        // forwarded, so a change to it has to be announced too.
+        target.output = ['text', 'image']
+      }
+      return new Response(JSON.stringify(rows), { status: 200 })
+    }
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: OCG_LIVE.map(m => ({ id: m.id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  let base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? base : undefined),
+    setProvider: p => { Object.assign(base, p) },
+    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+  }
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  const pLogs = []
+  const pCtx = {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    logger: {
+      info: (...a) => pLogs.push(['info', a.join(' ')]),
+      warn: (...a) => pLogs.push(['warn', a.join(' ')]),
+      debug: (...a) => pLogs.push(['debug', a.join(' ')]),
+    },
+    emit: ev => pLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
+  }
+  const priced = await import('./lib/index.js?repriced')
+  await priced.apply(pCtx)
+  const emittedAfterBoot = pLogs.filter(([l]) => l === 'emit').length
+
+  tick?.(); await wait()
+  const sameData = pLogs.filter(([l]) => l === 'emit').length
+  reprice = true
+  tick?.(); await wait()
+  const afterPriceChange = pLogs.filter(([l]) => l === 'emit').length
+  addOutput = true
+  tick?.(); await wait()
+  const afterUnknownField = pLogs.filter(([l]) => l === 'emit').length
+
+  ok('首次发布必定 emit', emittedAfterBoot === 1, `${emittedAfterBoot} 次`)
+  ok('数据未变不 emit', sameData === 1, `${sameData} 次`)
+  ok('远端改 price / display name 会 emit', afterPriceChange === 2, `${afterPriceChange} 次`)
+  ok('远端新增未知字段会 emit（透传的字段变化同样要抵达 consumer）',
+    afterUnknownField === 3, `${afterUnknownField} 次`)
+  globalThis.fetch = mainFetch
+}
+
+// ── 6.7 顺序本身就是目录信息，纯重排也必须 emit ────────────────────────────
+{
+  // orderModels() spends real effort putting the picker in Pi's published order,
+  // so a reordering upstream is a change DSH can see. Sorting the models by id
+  // inside the fingerprint would flatten exactly that back into a no-op.
+  const mainFetch = globalThis.fetch
+  let reorder = false
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) {
+      const rows = JSON.parse(JSON.stringify(PI_DEV))
+      // Same descriptors, same ids, same values — published in a different order.
+      if (reorder) rows.reverse()
+      return new Response(JSON.stringify(rows), { status: 200 })
+    }
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: OCG_LIVE.map(m => ({ id: m.id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  let base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? base : undefined),
+    setProvider: p => { Object.assign(base, p) },
+    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+  }
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  const oLogs = []
+  const oCtx = {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    logger: {
+      info: (...a) => oLogs.push(['info', a.join(' ')]),
+      warn: (...a) => oLogs.push(['warn', a.join(' ')]),
+      debug: (...a) => oLogs.push(['debug', a.join(' ')]),
+    },
+    emit: ev => oLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
+  }
+  const ordered = await import('./lib/index.js?reordered')
+  await ordered.apply(oCtx)
+  const boot = oLogs.filter(([l]) => l === 'emit').length
+  const orderBefore = base.getModels().map(m => m.id).join(',')
+
+  tick?.(); await wait()
+  const unchanged = oLogs.filter(([l]) => l === 'emit').length
+  reorder = true
+  tick?.(); await wait()
+  const afterReorder = oLogs.filter(([l]) => l === 'emit').length
+  const orderAfter = base.getModels().map(m => m.id).join(',')
+
+  ok('目录顺序真的变了', orderBefore !== orderAfter,
+    `${orderBefore.split(',').slice(0, 3)} -> ${orderAfter.split(',').slice(0, 3)} …`)
+  ok('descriptor 一个字节没变', JSON.stringify(JSON.parse(JSON.stringify(PI_DEV))) === JSON.stringify(JSON.parse(JSON.stringify(PI_DEV))))
+  ok('首次发布 emit', boot === 1, `${boot} 次`)
+  ok('顺序未变时不 emit', unchanged === 1, `${unchanged} 次`)
+  ok('仅顺序变化也 emit（fingerprint 不得按 id 排序抹平目录顺序）',
+    afterReorder === 2, `${afterReorder} 次`)
+  globalThis.fetch = mainFetch
+}
+
+// ── 7. roster 熔断：异常缩水要两轮才承认 ───────────────────────────────────
+{
+  // 'stale' is a one-id roster. Applying the previous behavior, that silently
+  // deleted every installed-only model; now it must be believed only once it
+  // repeats.
   mode = 'stale'
+  const before = ids()
+  logs.length = 0
+  await triggerRefresh()
+  await wait(); await wait()
+  ok('异常缩水的 roster 第一次出现被挡下，目录不变', ids().join() === before.join(),
+    `${before.length} -> ${ids().length}`)
+  ok('挡下时有明确告警', logs.some(([l, m]) => l === 'warn' && m.includes('suspicious shrink')))
+
   await triggerRefresh()
   await wait(); await wait()
   const after = ids()
-  // overlay（pi.dev + fallback）不受 roster 过滤：roster 掉线不等于模型下架。
-  // 被 roster 过滤掉的只应是**已安装目录**里那些确实不在 roster 的条目。
-  // stale-only roster：installed 27 个里，只有 stale-only 这一个 id 在 roster 中（且它本来就不在），
-  // 所以 27 个全部应被过滤；overlay 的 29+2 个不受影响。
-  // stale-only roster：installed 里 pi.dev 覆盖的 22 个回到 overlay 仍在；剩下 5 个既不在
-  // roster 也不在 pi.dev，无处可补，正确地消失。
   const devIds = new Set(PI_DEV.map(m => m.id))
   const unrecoverable = INSTALLED_IDS.filter(i => !devIds.has(i))
   const filtered = INSTALLED_IDS.filter(i => !after.includes(i))
-  ok('roster 只剩 stale-only 时，无处可补的 installed 模型被正确过滤',
-    filtered.length === unrecoverable.length && unrecoverable.every(i => filtered.includes(i)),
-    `被过滤 ${filtered.length} 个（期望 ${unrecoverable.length}）：${filtered.join(', ')}`)
+  ok('同样的缩水第二次出现才被接受', filtered.length === unrecoverable.length,
+    `被过滤 ${filtered.length} 个（期望 ${unrecoverable.length}）`)
   ok('pi.dev 覆盖的 installed 模型仍在（由 overlay 保留）',
     INSTALLED_IDS.filter(i => devIds.has(i)).every(i => after.includes(i)))
   ok('overlay 里的 fallback 模型不受 roster 影响（掉线≠下架）',
-    after.includes('space-bunny-free'))
-  ok('仍在 roster 的模型保留', after.includes('stale-only') === false && after.includes('deepseek-v4-flash'),
-    after.slice(0, 8).join(','))
+    after.includes('space-bunny-free') && after.includes('deepseek-v4.1-flash'))
+  ok('目录真的变了才 emit adapters-updated', logs.filter(([l]) => l === 'emit').length > 0,
+    `emit ${logs.filter(([l]) => l === 'emit').length} 次`)
+  ok('变化以 added/removed 形式记录', logs.some(([l, m]) => l === 'info' && m.includes('catalog updated:')),
+    logs.filter(([l, m]) => l === 'info' && m.includes('removed:')).map(([, m]) => m)[0]?.slice(0, 100) ?? '')
+}
+
+// ── 7.5 roster 状态机：空集 / 缩水 / 确认 / 恢复 ─────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  const FULL = LIVE_IDS
+  const SMALL = LIVE_IDS.slice(0, 18)
+
+  /**
+   * Boot a fresh plugin instance so the module-level roster state starts clean,
+   * then replay a script of rosters: the first entry is served to the initial
+   * refresh, each later one to one `step()`.
+   * @param {string} label - unique import query.
+   * @param {string[][]} rosters - roster id lists, in order.
+   * @returns {Promise<any>} the probe handles for that instance.
+   */
+  async function scenario(label, rosters) {
+    let call = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        const ids = rosters[Math.min(call, rosters.length - 1)]
+        call += 1
+        return new Response(JSON.stringify({ data: ids.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    let base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? base : undefined),
+      setProvider: p => { Object.assign(base, p) },
+      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    const sLogs = []
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const sCtx = {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: {
+        info: (...a) => sLogs.push(['info', a.join(' ')]),
+        warn: (...a) => sLogs.push(['warn', a.join(' ')]),
+        debug: (...a) => sLogs.push(['debug', a.join(' ')]),
+      },
+      emit: () => {}, effect: fn => fn(), on: () => {},
+    }
+    const mod = await import(`./lib/index.js?${label}`)
+    await mod.apply(sCtx)
+    return {
+      snap: () => base.getModels().map(m => m.id),
+      warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
+      step: async () => { tick?.(); await new Promise(r => setTimeout(r, 60)) },
+    }
+  }
+
+  // (a) 43 → 0：空集永远不被当作候选，也永远不覆盖 last-known-good
+  {
+    const s = await scenario('empty', [FULL, [], []])
+    const healthy = s.snap().length
+    await s.step()
+    const afterFirst = s.snap().length
+    await s.step()
+    const afterSecond = s.snap().length
+    ok('43 → 0：空 roster 被拒绝且从不成为候选', afterFirst === healthy && afterSecond === healthy,
+      `${healthy} -> ${afterFirst} -> ${afterSecond}`)
+    ok('空 roster 拒绝有告警且两次都报', s.warns().filter(w => w.includes('empty roster')).length === 2,
+      s.warns().filter(w => w.includes('empty roster')).length + ' 次')
+  }
+
+  // (b) 43 → 18 → 18：第一次挡，第二次承认
+  {
+    const s = await scenario('shrink', [FULL, SMALL, SMALL])
+    const healthy = s.snap().length
+    await s.step()
+    const held = s.snap().length
+    const heldWarn = s.warns().some(w => w.includes('suspicious shrink'))
+    await s.step()
+    const accepted = s.snap().length
+    ok('43 → 18：第一次 warn + pending，目录保持不变', held === healthy && heldWarn,
+      `${healthy} -> ${held}（held 警告 ${heldWarn ? '有' : '无'}）`)
+    ok('43 → 18 → 18：第二次同样的缩水被接受', accepted < held,
+      `${held} -> ${accepted}`)
+  }
+
+  // (c) 43 → 18 → 43：恢复应取消 pending，再来一次 18 又要重新确认
+  {
+    const s = await scenario('recover', [FULL, SMALL, FULL, SMALL])
+    const healthy = s.snap().length
+    await s.step()
+    const held = s.snap().length
+    await s.step()
+    const recovered = s.snap().length
+    await s.step()
+    const heldAgain = s.snap().length
+    ok('43 → 18 → 43：恢复后目录回到全量', recovered === healthy,
+      `${healthy} -> ${held} -> ${recovered}`)
+    ok('恢复取消了 pending，再次骤降仍需重新确认', heldAgain === healthy,
+      `再次 18 被挡：${heldAgain === healthy ? '是' : '否'}`)
+  }
+
+  globalThis.fetch = mainFetch
+}
+
+// ── 7.6 安全边界：远端不能决定请求去向与 headers ────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  const HOSTILE = [
+    { id: 'evil-completions', api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
+    { id: 'evil-anthropic', api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
+    { id: 'evil-unknown-api', api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
+  ]
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(HOSTILE), { status: 200 })
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: HOSTILE.map(m => ({ id: m.id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  let base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? base : undefined),
+    setProvider: p => { Object.assign(base, p) },
+    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+  }
+  globalThis.setInterval = () => ({ unref() {} })
+  const hCtx = {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    emit: () => {}, effect: fn => fn(), on: () => {},
+  }
+  const hostile = await import('./lib/index.js?hostile')
+  await hostile.apply(hCtx)
+  const got = base.getModels()
+  const completions = got.find(m => m.id === 'evil-completions')
+  const anthropic = got.find(m => m.id === 'evil-anthropic')
+  ok('远端 baseUrl 被忽略：openai 类固定到 /v1', completions?.baseUrl === 'https://opencode.ai/zen/go/v1',
+    completions?.baseUrl)
+  ok('远端 baseUrl 被忽略：anthropic 固定到网关根（不拼 /v1）',
+    anthropic?.baseUrl === 'https://opencode.ai/zen/go', anthropic?.baseUrl)
+  ok('远端 headers 被剥离', completions?.headers === undefined && anthropic?.headers === undefined,
+    JSON.stringify({ c: completions?.headers, a: anthropic?.headers }))
+  ok('未知协议的模型被丢弃（不存在的 transport 不注册）',
+    got.find(m => m.id === 'evil-unknown-api') === undefined)
+  globalThis.fetch = mainFetch
+}
+
+// ── 7.7 信任模型：控制面剥离，业务字段与未来字段透传 ────────────────────────
+{
+  ok('真实 fixture 不产生未知字段告警（KNOWN_CATALOG_FIELDS 覆盖当前 schema）',
+    !logs.some(([, m]) => m.includes('introduced new model field')),
+    logs.filter(([, m]) => m.includes('introduced new model field')).join(' | ') || '无')
+
+  const mainFetch = globalThis.fetch
+  const MIXED = [
+    {
+      id: 'control-plane', api: 'openai-completions', type: 'chat',
+      // every way a remote could try to steer a request
+      baseUrl: 'https://evil.example/v1', url: 'https://evil.example', endpoint: 'https://evil.example',
+      headers: { 'x-api-key': 'stolen' }, auth: { token: 'stolen' }, apiKey: 'stolen',
+      credentials: { user: 'x' }, proxy: 'http://127.0.0.1:1080',
+      env: { HTTPS_PROXY: 'http://127.0.0.1:1080' }, fetch: 'https://evil.example',
+      transport: 'evil-transport', provider: 'someone-else',
+    },
+    {
+      // a capability this plugin has never heard of: must arrive, not be stripped
+      id: 'future-model', api: 'openai-completions', type: 'chat',
+      name: 'Future Model', contextWindow: 1000, maxTokens: 500,
+      output: ['text', 'image'], promptCache: true, capabilities: { vision: true },
+    },
+  ]
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(MIXED), { status: 200 })
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: MIXED.map(m => ({ id: m.id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  let base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? base : undefined),
+    setProvider: p => { Object.assign(base, p) },
+    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+  }
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  const mLogs = []
+  const mCtx = {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    logger: {
+      info: (...a) => mLogs.push(['info', a.join(' ')]),
+      warn: (...a) => mLogs.push(['warn', a.join(' ')]),
+      debug: (...a) => mLogs.push(['debug', a.join(' ')]),
+    },
+    emit: () => {}, effect: fn => fn(), on: () => {},
+  }
+  const mixed = await import('./lib/index.js?mixed')
+  await mixed.apply(mCtx)
+  tick?.(); await wait(); await wait()
+  tick?.(); await wait(); await wait()
+
+  const control = base.getModels().find(m => m.id === 'control-plane')
+  const future = base.getModels().find(m => m.id === 'future-model')
+  const leaked = ['url', 'endpoint', 'headers', 'auth', 'apiKey', 'credentials', 'proxy', 'env', 'fetch', 'transport']
+    .filter(key => control?.[key] !== undefined)
+  ok('控制面字段一个都没透传（url/endpoint/auth/proxy/apiKey/credentials/env/fetch/transport/headers）',
+    leaked.length === 0, leaked.join(', ') || '无泄漏')
+  ok('provider 仍被插件改写，baseUrl 仍被固定',
+    control?.provider === 'opencode-go' && control?.baseUrl === 'https://opencode.ai/zen/go/v1',
+    `${control?.provider} / ${control?.baseUrl}`)
+  ok('未来能力字段原样透传，不被静默削掉',
+    JSON.stringify(future?.output) === JSON.stringify(['text', 'image'])
+      && future?.promptCache === true
+      && future?.capabilities?.vision === true,
+    JSON.stringify({ output: future?.output, promptCache: future?.promptCache, capabilities: future?.capabilities }))
+
+  const notices = mLogs.filter(([l, m]) => l === 'warn' && m.includes('introduced new model field'))
+  const named = notices[0]?.[1] ?? ''
+  ok('未知字段被点名告警（output/promptCache/capabilities）',
+    notices.length >= 1 && ['output', 'promptCache', 'capabilities'].every(f => named.includes(f)),
+    named.slice(0, 120))
+  ok('被主动剥离的控制面字段不算「新字段」，不混进告警',
+    !['url', 'endpoint', 'auth', 'apiKey', 'credentials', 'proxy', 'env', 'fetch', 'transport']
+      .some(f => new RegExp(`\\b${f}\\b`).test(named)),
+    named.slice(0, 120))
+  ok('未知字段告警整个进程只出现一次，不随 5 分钟轮询刷屏', notices.length === 1,
+    `${notices.length} 次（经历 3 次轮询）`)
+  globalThis.fetch = mainFetch
 }
 
 // ── 8. 降级：首次启动即 pi.dev 不可达（无骨架，顺序必须保持 installed 原序）─────
@@ -297,6 +695,92 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     order2.slice(0, 5).join(', '))
   ok('首次启动即降级时两个 fallback 模型仍可路由',
     order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'))
+}
+
+// ── 8.5 pi.dev 目录熔断：空/畸形响应不得覆盖 last-known-good ────────────────
+{
+  const mainFetch = globalThis.fetch
+
+  /**
+   * Boot a fresh instance whose pi.dev answers with `body` from the second poll
+   * onward, so the first refresh establishes a known-good catalog first.
+   * @param {string} label - unique import query.
+   * @param {any} body - the malformed (or valid) body pi.dev returns later.
+   * @returns {Promise<any>} the probe handles for that instance.
+   */
+  async function catalogScenario(label, body) {
+    let call = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        call += 1
+        return new Response(JSON.stringify(call === 1 ? PI_DEV : body), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    let base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? base : undefined),
+      setProvider: p => { Object.assign(base, p) },
+      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const cLogs = []
+    const cCtx = {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: {
+        info: (...a) => cLogs.push(['info', a.join(' ')]),
+        warn: (...a) => cLogs.push(['warn', a.join(' ')]),
+        debug: (...a) => cLogs.push(['debug', a.join(' ')]),
+      },
+      emit: () => {}, effect: fn => fn(), on: () => {},
+    }
+    const mod = await import(`./lib/index.js?${label}`)
+    await mod.apply(cCtx)
+    return {
+      snap: () => base.getModels().map(m => m.id),
+      warns: () => cLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
+      step: async () => { tick?.(); await wait(); await wait() },
+    }
+  }
+
+  // HTTP 200 but nothing usable in it — the fetch "succeeded", so only the
+  // breaker can keep the last good catalog alive.
+  for (const [label, body, why] of [
+    ['emptyarray', [], '空数组'],
+    ['dataempty', { data: [] }, 'envelope 变成 data 且为空'],
+    ['envelopeshift', { results: PI_DEV }, 'envelope 换成不认识的名字'],
+    ['allunknown', PI_DEV.map(m => ({ ...m, api: 'some-future-transport' })), '全部协议不认识'],
+  ]) {
+    const s = await catalogScenario(`cat-${label}`, body)
+    const good = s.snap().length
+    await s.step()
+    ok(`pi.dev 返回${why}时 last-known-good 不被覆盖`, s.snap().length === good,
+      `${good} -> ${s.snap().length}`)
+    ok(`pi.dev 返回${why}时有明确告警（不是静默降级）`,
+      s.warns().some(w => w.includes('pi.dev catalog refresh failed')), s.warns().find(w => w.includes('pi.dev catalog refresh failed'))?.slice(0, 110) ?? '无')
+  }
+
+  // The other direction: a new envelope that is *populated* is a new shape, not
+  // a failure, and must not be mistaken for one.
+  {
+    const s = await catalogScenario('cat-dataenvelope', { data: PI_DEV })
+    const good = s.snap().length
+    await s.step()
+    ok('envelope 变成 data 但内容正常时被正确识别，不误杀',
+      s.snap().length === good && !s.warns().some(w => w.includes('pi.dev catalog refresh failed')),
+      `${good} -> ${s.snap().length}`)
+  }
+
+  globalThis.fetch = mainFetch
 }
 
 let failed = 0

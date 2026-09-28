@@ -1,6 +1,6 @@
 {
   "name": "dsh-opencode-live-models",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Keep OpenCode Go models fresh without waiting for bundled pi-ai catalog updates",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,14 @@
     "lib",
     "cordis.patch.yml"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Luca4Don3/dsh-opencode-live-models.git"
+  },
+  "homepage": "https://github.com/Luca4Don3/dsh-opencode-live-models",
+  "bugs": {
+    "url": "https://github.com/Luca4Don3/dsh-opencode-live-models/issues"
+  },
   "engines": {
     "node": ">=18"
   },
