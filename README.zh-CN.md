@@ -1,10 +1,8 @@
-> 一个 DSH bundle，让 OpenCode Go 的模型目录保持最新，不必等 pi-ai 随版本更新。
-
-**[English](README.md)**
-
 # dsh-opencode-live-models
 
-在 DeepSeek Harness 中保持 OpenCode Go 模型目录新鲜，无需等待 pi-ai（以及随之而来的 DSH）发版来携带更新。
+[English](README.md) | 中文
+
+`dsh-opencode-live-models` 是一个 DeepSeek Harness（DSH）插件，让 OpenCode Go 的模型目录保持最新，无需等待 pi-ai 或 DSH 发版。
 
 它只打**一个**补丁：运行中的 pi-ai `Models` 集合里 `opencode-go` provider 的 `getModels()`。请求链路上的其他一切——wire transport、鉴权解析、provider 请求头——都完全沿用已安装的 pi-ai 原有实现，因此旧版 pi-ai 从未听说过的模型同样能被正确路由。
 
