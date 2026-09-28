@@ -1,6 +1,8 @@
 > A DSH bundle that keeps the OpenCode Go model catalog current without
 > waiting for a bundled pi-ai release to carry it.
 
+**[简体中文](README.zh-CN.md)**
+
 # dsh-opencode-live-models
 
 Keep the OpenCode Go model catalog fresh in DeepSeek Harness without waiting
