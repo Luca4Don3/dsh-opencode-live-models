@@ -85,6 +85,25 @@ absent from the roster. Overlay entries are exempt: a roster fetch that fails or
 lags must not empty the catalog, and a model Pi still publishes while the
 gateway has not yet indexed it is a rollout lag, not a retirement.
 
+## Ordering
+
+Appending the overlay to the installed catalog would read as two blocks — the
+installed order, then every new model piled on the end — because `Map.set`
+never moves an existing key, so the overlay can only append. The roster is
+therefore ordered deliberately:
+
+- **Spine:** the order Pi's catalog publishes, which is authoritative and
+  version-aware. A model the gateway added lands on the spine with everyone
+  else instead of in a trailing block.
+- **Anchored insertions:** the models only the installed catalog carries
+  (`omen-alpha`, `qwen3.6-plus`, …) go *before* their nearest following spine
+  model, so a family stays together: `glm-5.1` is placed before `glm-5.2`, not
+  after it.
+- **Tail:** anything with no anchor goes last.
+
+With Pi's catalog unreachable there is no spine to follow, so the installed
+order is returned untouched rather than guessed at.
+
 ## Install
 
 In the DSH plugin page, or:
@@ -112,8 +131,10 @@ reported, not added. To adopt one, add it to the Pi catalog or to
 
 `probe.mjs` verifies the merge logic against captured real responses: both
 fallback models land in the catalog with complete descriptors, the installed
-catalog is never emptied, undescribed models are never added, and the two
-upstream outages degrade without clearing the picker.
+catalog is never emptied, undescribed models are never added, the two upstream
+outages degrade without clearing the picker, and the ordering above holds —
+including a first boot with no Pi catalog, which must fall back to the
+installed order.
 
 ```sh
 # Capture fixtures (needs network)
@@ -123,7 +144,7 @@ curl -s 'https://pi.dev/api/models/providers/opencode-go?types=chat' \
   > ../.temp/ocg-fixtures/pi-dev-opencode-go.json
 # opencode-go-0.85.1.json comes from the installed client's app.asar
 
-node probe.mjs          # 20/20
+node probe.mjs          # 26/26
 ```
 
 Override the fixture directory with `OCG_FIXTURES`.

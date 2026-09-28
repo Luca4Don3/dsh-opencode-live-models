@@ -140,6 +140,50 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     got.filter(i => !liveSet.has(i)).join(',') || '无')
 }
 
+// ── 3.5 顺序：主序 + 锚定插入，而不是两段拼接 ──────────────────────────────
+{
+  const order = merged().map(m => m.id)
+  const devIds = PI_DEV.map(m => m.id)
+  const devSet = new Set(devIds)
+
+  // (a) Pi 目录里被收录的模型，相对次序与 Pi 发布的一致
+  const onSpine = order.filter(id => devSet.has(id))
+  const expectedSpine = devIds.filter(id => order.includes(id))
+  ok('Pi 目录收录的模型保持 Pi 发布的相对次序', JSON.stringify(onSpine) === JSON.stringify(expectedSpine),
+    onSpine.length === expectedSpine.length ? `${onSpine.length} 个主序成员全部保序` : `${onSpine.length} vs ${expectedSpine.length}`)
+
+  // (b) 新模型不再被追加成末尾一整块
+  const lastSpine = order.lastIndexOf(order.filter(id => devSet.has(id)).at(-1))
+  ok('新模型不再堆在末尾（主序末位之后至多 1 个）', order.length - lastSpine - 1 <= 1,
+    `末尾残留 ${order.length - lastSpine - 1} 个：${order.slice(lastSpine + 1).join(', ') || '无'}`)
+
+  // (c) 仅 installed 独有的模型，插在它后继主序模型之前 —— 家族因此连续
+  const installedOrder = INSTALLED.map(m => m.id)
+  const inserted = order.filter(id => !devSet.has(id) && installedOrder.includes(id))
+  const anchored = inserted.every(id => {
+    const at = order.indexOf(id)
+    const successor = installedOrder.slice(installedOrder.indexOf(id) + 1)
+      .find(i => devSet.has(i) && order.includes(i))
+    // Several insertions can share one anchor and land as a block in front of
+    // it, so skip the siblings before looking for the anchor itself.
+    let next = at + 1
+    while (next < order.length && !devSet.has(order[next])) next += 1
+    if (successor !== undefined) return order[next] === successor
+    return next >= order.length
+  })
+  ok('仅 installed 独有的模型紧贴其后继主序模型（家族不被打散）', anchored,
+    inserted.map(id => `${id}→${order[order.indexOf(id) + 1] ?? '(末尾)'}`).join(', '))
+
+  // (d) 同厂商模型在最终列表中连续
+  const families = [...new Set(order.map(id => id.match(/^[a-z]+/)[0]))]
+  const split = families.filter(f => {
+    const at = order.map((id, i) => (id.startsWith(f) ? i : -1)).filter(i => i >= 0)
+    return at.length > 1 && at.at(-1) - at[0] !== at.length - 1
+  })
+  ok('同厂商模型在列表中连续', split.length === 0,
+    split.length === 0 ? '无被打散的厂商' : `被打散：${split.join(', ')}`)
+}
+
 // ── 4. 未知模型只报告不瞎猜 ─────────────────────────────────────────────────
 {
   const warn = logs.filter(([l]) => l === 'warn').map(([, m]) => m)
@@ -219,6 +263,40 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     after.includes('space-bunny-free'))
   ok('仍在 roster 的模型保留', after.includes('stale-only') === false && after.includes('deepseek-v4-flash'),
     after.slice(0, 8).join(','))
+}
+
+// ── 8. 降级：首次启动即 pi.dev 不可达（无骨架，顺序必须保持 installed 原序）─────
+{
+  mode = 'no-pidev'
+  let base2 = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => { throw new Error('not used') },
+    streamSimple: () => { throw new Error('not used') },
+  }
+  const collection2 = {
+    getProvider: (id) => (id === 'opencode-go' ? base2 : undefined),
+    setProvider: (p) => { Object.assign(base2, p) },
+  }
+  const ctx2 = {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: collection2 }) } }]]) },
+    logger: { info: () => {}, warn: () => {} },
+    emit: () => {},
+    effect: () => {},
+    on: () => {},
+  }
+  // The query makes ESM load a *fresh* instance, so its module-level
+  // remoteCatalog starts empty — the state of a first boot with no network.
+  const fresh = await import('./lib/index.js?firstboot')
+  await fresh.apply(ctx2)
+  const order2 = base2.getModels().map(m => m.id)
+  const liveSet = new Set(LIVE_IDS)
+  const installedOrder = INSTALLED.map(m => m.id).filter(id => liveSet.has(id))
+  ok('首次启动即 pi.dev 不可达：退回 installed 原序（无主序时不臆造顺序）',
+    order2.slice(0, installedOrder.length).join() === installedOrder.join(),
+    order2.slice(0, 5).join(', '))
+  ok('首次启动即降级时两个 fallback 模型仍可路由',
+    order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'))
 }
 
 let failed = 0
