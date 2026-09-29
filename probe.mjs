@@ -991,17 +991,22 @@ freshState()
       getModels: () => INSTALLED.slice(),
       stream: () => {}, streamSimple: () => {},
     }
+    // A real provider slot, not `Object.assign(base, p)`: the unload path
+    // restores a provider only while ours is still the installed one, and a
+    // mock that mutates in place makes that identity check permanently false —
+    // hiding the bug instead of testing it.
+    let current = base
     const coll = {
-      getProvider: id => (id === 'opencode-go' ? base : undefined),
-      setProvider: p => { Object.assign(base, p) },
-      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
     }
     const adapters = new Map()
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const disposers = []
     const sLogs = []
-    let onAdaptersUpdated = null
+    const listeners = new Map()
     const sCtx = {
       llm: { adapters },
       logger: {
@@ -1009,9 +1014,14 @@ freshState()
         warn: (...a) => sLogs.push(['warn', a.join(' ')]),
         debug: (...a) => sLogs.push(['debug', a.join(' ')]),
       },
-      emit: () => {},
+      // Really dispatch, so a plugin that emits its own event reaches its own
+      // listener; an inert emit() hides that re-entry completely.
+      emit: (ev) => { for (const fn of listeners.get(ev) ?? []) fn(ev) },
       effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
-      on: (ev, fn) => { if (ev === 'llm/adapters-updated') onAdaptersUpdated = fn },
+      on: (ev, fn) => {
+        if (!listeners.has(ev)) listeners.set(ev, [])
+        listeners.get(ev).push(fn)
+      },
     }
     freshState()
     const mod = await import(`./lib/index.js?${label}`)
@@ -1021,11 +1031,16 @@ freshState()
     return {
       attach() {
         adapters.set('opencode-go', { adapter })
-        onAdaptersUpdated?.()
+        for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('llm/adapters-updated')
+      },
+      /** Fire the event the way DSH would, without re-registering the adapter. */
+      announce() {
+        for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('llm/adapters-updated')
       },
       adapter,
       originalCurrent,
       snap: () => coll.getModels('opencode-go').map(m => m.id),
+      installedOnly: () => INSTALLED_IDS.filter(i => !PI_DEV.some(m => m.id === i)),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { poll += 1; tick?.(); await wait(); await wait(); await wait() },
       dispose() { for (const d of disposers) d() },
@@ -1072,23 +1087,54 @@ freshState()
       held === full && accepted < held, `${full} → ${held} → ${accepted}`)
   }
 
-  // (c) adapter 延迟注册：首次无可信基线，单条名单先挂起
+  // (c) adapter 延迟注册：单条名单先挂起；且**重复事件不得把同一份数据
+  //     当成第二次确认** —— 确认必须来自新的网络响应
   {
     const script = [
       { catalog: PI_DEV, roster: ['gpt-5.6-luna'] },
       { catalog: PI_DEV, roster: ['gpt-5.6-luna'] },
     ]
     const s = await lateAdapter('late-adapter', script)
-    const beforeAttach = s.snap().length
     s.attach()
     await wait(); await wait()
-    const after = s.snap()
-    const missing = INSTALLED_IDS.filter(i => !after.includes(i))
     ok('adapter 晚注册：单条名单被挂起，installed-only 模型一个不丢',
-      missing.length === 0, `注册前 ${beforeAttach} → 注册后 ${after.length}；缺失 ${missing.join(',') || '无'}`)
+      s.installedOnly().every(i => s.snap().includes(i)),
+      `目录 ${s.snap().length}；缺失 ${s.installedOnly().filter(i => !s.snap().includes(i)).join(',') || '无'}`)
     ok('adapter 晚注册：拿到基线后重新判定，缩水名单仍被挡下',
       s.warns().some(w => w.includes('roster suspicious shrink')),
       s.warns().find(w => w.includes('roster suspicious shrink'))?.slice(0, 100) ?? '无')
+
+    // Our own event, fired twice more, must not re-judge the same bytes.
+    s.announce()
+    s.announce()
+    await wait(); await wait()
+    ok('重复的 adapters-updated 不会拿同一份数据当第二次确认',
+      s.installedOnly().every(i => s.snap().includes(i)),
+      `重复事件后 ${s.snap().length} 个；缺失 ${s.installedOnly().filter(i => !s.snap().includes(i)).join(',') || '无'}`)
+  }
+
+  // (c2) 重复事件不堆叠 hook；卸载一次即可退净，provider 也还原
+  {
+    const s = await lateAdapter('repeat-hook', [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: PI_DEV, roster: LIVE_IDS },
+    ])
+    s.attach()
+    s.announce()
+    s.announce()
+    s.announce()
+    await wait(); await wait()
+    const hookedOnce = s.adapter.current
+    s.announce()
+    await wait()
+    ok('重复事件不会反复包装 adapter.current（hook 不嵌套）',
+      hookedOnce !== s.originalCurrent && s.adapter.current === hookedOnce,
+      `重复事件后 ${s.adapter.current === hookedOnce ? '引用未变' : '★又被包了一层'}`)
+    s.dispose()
+    ok('重复事件后卸载一次即恢复原函数', s.adapter.current === s.originalCurrent,
+      s.adapter.current === s.originalCurrent ? '已恢复' : '★仍是包装版本')
+    ok('卸载后 provider 被还原，目录回到原安装目录', s.snap().length === INSTALLED.length,
+      `卸载后 ${s.snap().length}（期望 ${INSTALLED.length}）`)
   }
 
   // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
@@ -1162,15 +1208,76 @@ freshState()
     s.attach()
     await wait(); await wait()
     ok('挂载后 adapter.current 被包装', s.adapter.current !== s.originalCurrent)
-    const seenBefore = s.snap().length
     s.dispose()
     ok('卸载后 adapter.current 恢复为原函数', s.adapter.current === s.originalCurrent,
       s.adapter.current === s.originalCurrent ? '已恢复' : '★仍是被包装的版本')
     // A refresh already in flight must not write into a state the next instance
-    // is about to inherit.
+    // is about to inherit: with the provider unwound, the picker must stay on
+    // the installed catalog rather than snapping back to the overlay.
     await s.step()
-    ok('卸载后刷新不再把新数据写进共享状态', s.snap().length === seenBefore,
-      `${seenBefore} → ${s.snap().length}`)
+    ok('卸载后在途刷新不回写，目录停在原安装目录', s.snap().length === INSTALLED.length,
+      `卸载并刷新后 ${s.snap().length}（期望 ${INSTALLED.length}）`)
+  }
+
+  // (e) 旧实例的在途请求晚于新实例返回：不得覆盖新实例的结果
+  {
+    // The old instance's roster is the one that deletes installed models. A
+    // shared `disposed` flag would be cleared by the new mount and let this late
+    // answer through, taking the new instance's catalog down with it.
+    const COLLAPSE = ['gpt-5.6-luna']
+    let release
+    const gate = new Promise(r => { release = r })
+    let phase = 'old'
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        if (phase === 'old') {
+          await gate
+          return new Response(JSON.stringify({ data: COLLAPSE.map(id => ({ id })) }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const quiet = () => ({
+      llm: { adapters },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {}, effect: () => {}, on: () => {},
+    })
+
+    const oldMod = await import('./lib/index.js?stale-old')
+    const oldApply = oldMod.apply(quiet())      // still blocked on the gate
+    const newMod = await import('./lib/index.js?stale-new')
+    phase = 'new'
+    await newMod.apply(quiet())
+    const shownByNew = coll.getModels('opencode-go').map(m => m.id).length
+
+    release()
+    await oldApply
+    await wait(); await wait(); await wait()
+    const afterOld = coll.getModels('opencode-go').map(m => m.id)
+
+    ok('旧实例的请求在新实例之后返回，目录不被它覆盖',
+      afterOld.length === shownByNew,
+      `新实例 ${shownByNew} 个 → 旧请求返回后 ${afterOld.length} 个`)
+    ok('旧实例的缩水名单被丢弃，installed-only 模型未消失',
+      afterOld.length > INSTALLED.length,
+      `目录 ${afterOld.length} 个（installed-only 全部在列）`)
   }
 
   globalThis.fetch = mainFetch
