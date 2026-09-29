@@ -33,6 +33,22 @@ function fixture(name) {
 const results = []
 const ok = (name, pass, detail = '') => results.push({ name, pass, detail })
 
+/**
+ * The plugin keeps its mutable state on `globalThis` so a wrapper installed
+ * before a hot reload keeps working afterwards. Each scenario here is meant to
+ * be an independent cold start, so it has to clear that slot first — otherwise
+ * the second scenario inherits the first one's published catalog, pending
+ * confirmations and "already warned" field names, and every assertion about a
+ * first publish quietly becomes an assertion about a second one.
+ *
+ * The hot-reload scenario deliberately does *not* call this: sharing the slot is
+ * the behaviour under test there.
+ */
+const STATE_KEY = Symbol.for('dsh-opencode-live-models.state')
+function freshState() {
+  delete globalThis[STATE_KEY]
+}
+
 // 真实数据
 const liveData = fixture('ocg-models.json')
 const OCG_LIVE = liveData.data
@@ -309,6 +325,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     },
     emit: ev => pLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
+freshState()
   const priced = await import('./lib/index.js?repriced')
   await priced.apply(pCtx)
   const emittedAfterBoot = pLogs.filter(([l]) => l === 'emit').length
@@ -372,6 +389,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     },
     emit: ev => oLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
+freshState()
   const ordered = await import('./lib/index.js?reordered')
   await ordered.apply(oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
@@ -485,6 +503,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
+freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mod.apply(sCtx)
     return {
@@ -580,6 +599,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
+freshState()
   const hostile = await import('./lib/index.js?hostile')
   await hostile.apply(hCtx)
   const got = base.getModels()
@@ -658,6 +678,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
+freshState()
   const mixed = await import('./lib/index.js?mixed')
   await mixed.apply(mCtx)
   tick?.(); await wait(); await wait()
@@ -714,6 +735,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   }
   // The query makes ESM load a *fresh* instance, so its module-level
   // remoteCatalog starts empty — the state of a first boot with no network.
+freshState()
   const fresh = await import('./lib/index.js?firstboot')
   await fresh.apply(ctx2)
   const order2 = base2.getModels().map(m => m.id)
@@ -741,12 +763,15 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
    */
   async function scripted(label, script) {
     let poll = 0
-    const timers = []
     globalThis.fetch = async (url) => {
       const u = String(url)
+      // Both feeds read the *same* step: a refresh issues two requests, so
+      // advancing on each request would hand pi.dev one step and the roster the
+      // next. That happens to be harmless in today's cases only because neither
+      // step is a mixture; a cross-feed scenario would silently read the wrong
+      // pair. The step advances in step(), once per refresh.
       const step = script[Math.min(poll, script.length - 1)]
-      poll += 1
-      if (step.delay) await new Promise(r => timers.push(setTimeout(r, step.delay)))
+      if (step.delay) await new Promise(r => setTimeout(r, step.delay))
       if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(step.catalog), { status: 200 })
       if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
         return new Response(JSON.stringify({ data: step.roster.map(id => ({ id })) }), { status: 200 })
@@ -775,12 +800,17 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
+freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mod.apply(sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
-      step: async () => { tick?.(); await wait(); await wait(); await wait() },
+      step: async () => {
+        poll += 1
+        tick?.()
+        await wait(); await wait(); await wait()
+      },
     }
   }
 
@@ -893,6 +923,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
+freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mod.apply(cCtx)
     return {
@@ -928,6 +959,218 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     ok('envelope 变成 data 但内容正常时被正确识别，不误杀',
       s.snap().length === good && !s.warns().some(w => w.includes('pi.dev catalog refresh failed')),
       `${good} -> ${s.snap().length}`)
+  }
+
+  globalThis.fetch = mainFetch
+}
+
+// ── 8.7 连续确认必须真的连续 + 延迟注册的基线 + 热重载接管 ────────────────
+{
+  const mainFetch = globalThis.fetch
+
+  /**
+   * A live plugin environment whose adapter can be attached later, with both
+   * feeds scripted per refresh.
+   * @param {string} label - unique import query.
+   * @param {Array<{ catalog: any, roster: string[] }>} script - per-poll feeds.
+   * @returns {Promise<any>} handles for attaching, stepping and disposing.
+   */
+  async function lateAdapter(label, script) {
+    let poll = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      const step = script[Math.min(poll, script.length - 1)]
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(step.catalog), { status: 200 })
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: step.roster.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? base : undefined),
+      setProvider: p => { Object.assign(base, p) },
+      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    const adapters = new Map()
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const disposers = []
+    const sLogs = []
+    let onAdaptersUpdated = null
+    const sCtx = {
+      llm: { adapters },
+      logger: {
+        info: (...a) => sLogs.push(['info', a.join(' ')]),
+        warn: (...a) => sLogs.push(['warn', a.join(' ')]),
+        debug: (...a) => sLogs.push(['debug', a.join(' ')]),
+      },
+      emit: () => {},
+      effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+      on: (ev, fn) => { if (ev === 'llm/adapters-updated') onAdaptersUpdated = fn },
+    }
+    freshState()
+    const mod = await import(`./lib/index.js?${label}`)
+    await mod.apply(sCtx)
+    const adapter = { current: () => ({ models: coll }) }
+    const originalCurrent = adapter.current
+    return {
+      attach() {
+        adapters.set('opencode-go', { adapter })
+        onAdaptersUpdated?.()
+      },
+      adapter,
+      originalCurrent,
+      snap: () => coll.getModels('opencode-go').map(m => m.id),
+      warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
+      step: async () => { poll += 1; tick?.(); await wait(); await wait(); await wait() },
+      dispose() { for (const d of disposers) d() },
+    }
+  }
+
+  // (a) 43 → 18 → 0 → 18：中间插了空响应，两次 18 并非连续
+  {
+    const script = [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: PI_DEV, roster: LIVE_IDS.slice(0, 18) },
+      { catalog: PI_DEV, roster: [] },
+      { catalog: PI_DEV, roster: LIVE_IDS.slice(0, 18) },
+    ]
+    const s = await lateAdapter('nonconsecutive', script)
+    s.attach()
+    await wait(); await wait()
+    const full = s.snap().length
+    await s.step()
+    await s.step()
+    await s.step()
+    const after = s.snap().length
+    const missing = INSTALLED_IDS.filter(i => !s.snap().includes(i))
+    ok('43 → 18 → 0 → 18：中间失败后不再确认（候选被重置）',
+      after === full, `${full} → ${after}${missing.length ? `，缺失 ${missing.join(',')}` : ''}`)
+  }
+
+  // (b) 43 → 18 → 18：真正连续，仍应确认
+  {
+    const script = [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: PI_DEV, roster: LIVE_IDS.slice(0, 18) },
+      { catalog: PI_DEV, roster: LIVE_IDS.slice(0, 18) },
+    ]
+    const s = await lateAdapter('consecutive', script)
+    s.attach()
+    await wait(); await wait()
+    const full = s.snap().length
+    await s.step()
+    const held = s.snap().length
+    await s.step()
+    const accepted = s.snap().length
+    ok('43 → 18 → 18：真正连续仍会确认（重置逻辑未误伤）',
+      held === full && accepted < held, `${full} → ${held} → ${accepted}`)
+  }
+
+  // (c) adapter 延迟注册：首次无可信基线，单条名单先挂起
+  {
+    const script = [
+      { catalog: PI_DEV, roster: ['gpt-5.6-luna'] },
+      { catalog: PI_DEV, roster: ['gpt-5.6-luna'] },
+    ]
+    const s = await lateAdapter('late-adapter', script)
+    const beforeAttach = s.snap().length
+    s.attach()
+    await wait(); await wait()
+    const after = s.snap()
+    const missing = INSTALLED_IDS.filter(i => !after.includes(i))
+    ok('adapter 晚注册：单条名单被挂起，installed-only 模型一个不丢',
+      missing.length === 0, `注册前 ${beforeAttach} → 注册后 ${after.length}；缺失 ${missing.join(',') || '无'}`)
+    ok('adapter 晚注册：拿到基线后重新判定，缩水名单仍被挡下',
+      s.warns().some(w => w.includes('roster suspicious shrink')),
+      s.warns().find(w => w.includes('roster suspicious shrink'))?.slice(0, 100) ?? '无')
+  }
+
+  // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
+  {
+    const rows = [...PI_DEV, { id: 'hot-reload-new', api: 'openai-completions', type: 'chat', name: 'Hot New' }]
+    let poll = 0
+    let catalogPolls = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      const catalog = poll === 0 ? PI_DEV : rows
+      if (u.startsWith('https://pi.dev/')) { catalogPolls += 1; return new Response(JSON.stringify(catalog), { status: 200 }) }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: [...LIVE_IDS, 'hot-reload-new'].map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? base : undefined),
+      setProvider: p => { Object.assign(base, p) },
+      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    // The reload must run the *second* instance's timer, so the context has to
+    // actually call the effect body — an empty stub would leave `tick` pointing
+    // at whatever the previous scenario installed.
+    const makeCtx = (logs) => ({
+      llm: { adapters },
+      logger: {
+        info: (...a) => logs.push(['info', a.join(' ')]),
+        warn: (...a) => logs.push(['warn', a.join(' ')]),
+        debug: (...a) => logs.push(['debug', a.join(' ')]),
+      },
+      emit: () => {},
+      effect: fn => { fn() },
+      on: () => {},
+    })
+
+    // Deliberately no freshState(): this instance must adopt the slot the first
+    // one left behind, which is the whole point of this section.
+    const first = await import('./lib/index.js?hmr-first')
+    await first.apply(makeCtx([]))
+    const wrapped = coll.getProvider('opencode-go')
+    const beforeReload = coll.getModels('opencode-go').map(m => m.id)
+
+    const second = await import('./lib/index.js?hmr-second')
+    await second.apply(makeCtx([]))
+    const sameWrapper = coll.getProvider('opencode-go') === wrapped
+    poll = 1   // the next poll is the one that carries the new descriptor
+    tick?.(); await wait(); await wait(); await wait()
+    const afterReload = coll.getModels('opencode-go').map(m => m.id)
+
+    ok('热重载：provider 未被二次包装（沿用同一 wrapper）', sameWrapper)
+    ok('热重载：新实例拉到的新模型进入目录（旧 wrapper 不再读旧闭包）',
+      afterReload.includes('hot-reload-new') && !beforeReload.includes('hot-reload-new'),
+      `重载前 ${beforeReload.length} → 重载后 ${afterReload.length}，新模型${afterReload.includes('hot-reload-new') ? '已出现' : '★缺失'}（pi.dev 取数 ${catalogPolls} 次）`)
+  }
+
+  // (d) 卸载：adapter hook 被恢复，在途刷新不再回写
+  {
+    const s = await lateAdapter('unload', [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: PI_DEV, roster: LIVE_IDS },
+    ])
+    s.attach()
+    await wait(); await wait()
+    ok('挂载后 adapter.current 被包装', s.adapter.current !== s.originalCurrent)
+    const seenBefore = s.snap().length
+    s.dispose()
+    ok('卸载后 adapter.current 恢复为原函数', s.adapter.current === s.originalCurrent,
+      s.adapter.current === s.originalCurrent ? '已恢复' : '★仍是被包装的版本')
+    // A refresh already in flight must not write into a state the next instance
+    // is about to inherit.
+    await s.step()
+    ok('卸载后刷新不再把新数据写进共享状态', s.snap().length === seenBefore,
+      `${seenBefore} → ${s.snap().length}`)
   }
 
   globalThis.fetch = mainFetch
