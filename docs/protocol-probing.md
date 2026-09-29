@@ -3,9 +3,19 @@
 插件的既定策略是：OCG 已上线、但 Pi 尚未发布描述符的模型，**只报告、不猜测**。
 本文记录"通过探测网关来自动推断描述符"这条路为什么走不通，以及替代方案。
 
-结论先说：**探测得到的信号只有否定、没有肯定，能排除不能确认；而 `contextWindow` /
-`maxTokens` 无论怎么探测都拿不到。** 同一批模型改用 `models.dev` 查表，命中率
-13/14。
+结论先说：**协议探测走不通，而查表这条路也救不了真正缺 descriptor 的那批模型。**
+两者卡在同一个地方——没有任何来源会告诉你 OCG 上某个模型该用哪个 `api`。
+
+## 真正缺 descriptor 的是 9 个，不是 14 个
+
+"不在 pi.dev" 的 14 个里，有 5 个（`kimi-k2.6`、`glm-5.1`、`qwen3.7-max`、
+`qwen3.6-plus`、`omen-alpha`）在 installed pi-ai 里**本来就有 descriptor**，当前即可使用。
+真正没有 descriptor 的是 9 个：
+
+```
+minimax-m2.5  kimi-k2.5  glm-5  deepseek-flash  qwen3.5-plus
+mimo-v2-pro   mimo-v2-omni  hy3-preview  grok-4.5
+```
 
 ## 需要推断的东西
 
@@ -58,7 +68,8 @@ GET https://opencode.ai/zen/go/v1/models
 
 ## 难点三：能排除，不能确认
 
-待救的 14 个模型实测：
+没有 descriptor 的模型实测（`kimi-k2.6` 和 `glm-5.1` 已由 installed 目录覆盖，
+一并列出以说明信号本身的样子）：
 
 | 模型 | chat/completions | responses | messages |
 |---|---|---|---|
@@ -89,28 +100,58 @@ GET https://opencode.ai/zen/go/v1/models
 **真的发一次请求** —— 于是探测变成了试错调用：有费用、有速率限制、有触发内容
 过滤的可能。对一个每 5 分钟轮询的插件，这条路和"减少无谓请求"的初衷直接冲突。
 
-## 替代方案：查表
+## 查表：models.dev 能给能力字段，但给不了 `api`
 
-同一批 14 个模型喂给 [`models.dev`](https://models.dev/api.json)：
+[`models.dev`](https://models.dev/api.json) 收录 225 个 provider，其中 `opencode-go`
+正是 OCG 的对口岸位。先验证它靠不靠得住——拿 pi.dev 已知的 29 个模型逐项比对：
 
-```
-命中 13 / 14
-  glm-5[zai]  glm-5.1[zai]  qwen3.7-max[alibaba-token-plan]  kimi-k2.6[...]
-  kimi-k2.5[...]  qwen3.6-plus[...]  deepseek-flash[deepseek]  qwen3.5-plus[...]
-未命中: omen-alpha
-```
+| 字段 | 与 pi.dev 一致 |
+|---|---|
+| `contextWindow` | **29 / 29** |
+| `maxTokens` | **29 / 29** |
+| `cost.input` | **29 / 29** |
 
-纯查表，零费用、零副作用、可以在 CI 里跑。而且**命中与否是可验证的**，不像探测
-只能得到一堆无法解读的 `AuthError`。
+它是可靠的——但**不含 `api` 字段**。models.dev 的模型对象只有
+`id / name / description / family / attachment / reasoning / tool_call /
+modalities / limit / cost …`，`attachment` 是"是否支持附件"的布尔值，不是协议。
 
-如果要做，需要处理的细节：
+而 `api` 恰恰是五个必需字段里最关键的一个：它决定请求发往哪个端点，猜错就是
+404 或协议错误。
 
-1. **同名模型出现在多个 provider 下**（`kimi-k2.6` 同时挂在
-   `alibaba-token-plan` 等条目下），选错 provider 会拿到错的 `api`。
-2. **数据滞后**：models.dev 更新慢于 OCG 上线，滞后期间仍需走"只报告"分支。
-3. **命名不一致**：`models.dev` 用 `kimi-k2.6`，OCG 也用 `kimi-k2.6`（一致），
-   但这类一致性不能假定，需要逐个核对。
-4. 缓存与失效策略：查表结果同样需要写进现有的 last-known-good 缓存。
+更要紧的是覆盖度。`opencode-go` 收录 33 个模型，与网关当前 43 个的交集是 33，
+对那 9 个待救模型**只命中 1 个**（`grok-4.5`）——它和 pi.dev 一样滞后。
 
-结论是：把这条列为 `pi.dev → models.dev → 本地 FALLBACK 覆盖` 的多源查找，比协议
-探测更稳、更可测，也更符合插件既有的"显式失败优于静默降级"。
+至于其他 provider 下的同名模型，**不能代表 OCG**。同一模型在不同 provider 下的
+容量声明并不一致：
+
+| 待救模型 | 其他 provider 数 | `contextWindow` 取值数 |
+|---|---|---|
+| `minimax-m2.5` | 8 | **5 种** |
+| `kimi-k2.5` | 20 | **3 种** |
+| `glm-5` | 15 | **5 种** |
+| `qwen3.5-plus` | 7 | 2 种 |
+| `grok-4.5` | 10 | 2 种 |
+
+一个模型在 8 个 provider 下有 5 种不同的上下文窗口——从这些数字里挑一个填进
+descriptor，就是在编造。`zai`、`alibaba-token-plan`、`deepseek` 的协议选择和价格
+同样不代表 OCG。
+
+所以「ID 能查到」这件事本身没有价值：**查到之后，五个必需字段里最关键的那个
+仍然缺失，其余的又不可信。**
+
+## 结论，以及仍然可行的做法
+
+两条自动路径堵在同一处：**没有任何来源能给出 OCG 上某个模型的 `api`**。
+
+- **协议探测** 能排除端点，不能确认端点。
+- **查表** 能给容量和价格，不给协议。
+
+所以这 9 个模型**目前无法自动上架**，插件继续报告它们是正确的行为，不是缺陷。
+
+真正能做的是**人工覆盖**：把某个模型连同它的 `api` 一起写进 `FALLBACK_MODELS`。
+这需要知道 OCG 为该模型选定的协议 —— `minimax-m2.5` 在 `/v1/responses` 上返回
+`not supported for format openai`（见上文探测），说明它不是 `openai-responses`；
+但剩下两个端点网关不给区分信号，最终仍需一次真实请求来确认。
+
+如果将来 OCG 在 `/v1/models` 上补上 `api` 字段，这条链路会立刻成立 —— 届时漂移
+报告分支可以改为自动叠加，不需要任何探测逻辑。
