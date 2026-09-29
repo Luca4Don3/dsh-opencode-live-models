@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The plugin declares node >= 18, and the suite uses nothing newer than
+        # that: 18 is the floor, 24 is what DSH actually ships with.
+        node: ['18', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No install step: the plugin has no dependencies, and probe.mjs resolves
+      # its fixtures relative to this file, so the tree is all it needs.
+      - name: npm test
+        run: npm test

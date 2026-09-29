@@ -876,6 +876,25 @@ freshState()
     ok('并行取数后目录仍正确', s.snap().length > 30, `${s.snap().length} 个模型`)
   }
 
+  // (d2) 漂移告警：名单不变就不重复刷屏，名单一变要重新提示
+  {
+    const UNKNOWN = ['mystery-1', 'mystery-2']
+    const s = await scripted('drift-quiet', [
+      { catalog: PI_DEV, roster: [...LIVE_IDS, ...UNKNOWN] },
+      { catalog: PI_DEV, roster: [...LIVE_IDS, ...UNKNOWN] },
+      { catalog: PI_DEV, roster: [...LIVE_IDS, ...UNKNOWN, 'mystery-3'] },
+      { catalog: PI_DEV, roster: [...LIVE_IDS, ...UNKNOWN, 'mystery-3'] },
+    ])
+    const count = () => s.warns().filter(w => w.includes('have no descriptor yet')).length
+    ok('首次出现时报告一次', count() === 1, `${count()} 次`)
+    await s.step()
+    ok('名单不变时不再重复（5 分钟轮询保持安静）', count() === 1, `${count()} 次`)
+    await s.step()
+    ok('名单变化时重新报告', count() === 2, `${count()} 次`)
+    await s.step()
+    ok('再次稳定后不再重复', count() === 2, `${count()} 次`)
+  }
+
   globalThis.fetch = mainFetch
 }
 
