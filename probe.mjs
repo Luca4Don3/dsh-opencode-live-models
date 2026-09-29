@@ -561,9 +561,12 @@ freshState()
 
   ok('首次请求不带条件头（还没有 ETag）', seen[0] === null, `${seen[0]}`)
   ok('第二次请求带上 If-None-Match', seen[1] === ETAG, `${seen[1]}`)
+  // The cache-write warning is excluded: the probe runs in a sandbox where
+  // ~/.dsh is not writable, so it fires for environmental reasons and says
+  // nothing about how 304 is handled.
+  const relevantWarn = (m) => !m.includes('have no descriptor yet') && !m.includes('could not persist')
   ok('304 不被当作失败，也不重新发布',
-    afterSecond.length === afterFirst.length
-      && !logs.some(([l, m]) => l === 'warn' && !m.includes('have no descriptor yet')),
+    afterSecond.length === afterFirst.length && !logs.some(([l, m]) => l === 'warn' && relevantWarn(m)),
     `${afterFirst.length} → ${afterSecond.length}；warn: ${logs.map(([, m]) => m.slice(0, 70)).join(' | ') || '无'}`)
   ok('304 被记录下来', logs.some(([, m]) => m.includes('304')), logs.find(([, m]) => m.includes('304')) ?? '无')
   ok('roster 不发条件头（网关没有 ETag 可用）', rosterCond === null, `${rosterCond}`)
@@ -648,8 +651,87 @@ freshState()
     await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(hostile), 'utf8')
   } catch { /* asserted below */ }
   const tampered = await runOnce('tampered')
+  const tamperedModels = await runOnce('tampered')
   ok('缓存文件被篡改时按同样规则拒绝（api=constructor 不通过）',
-    !tampered.includes('cached-evil'), tampered.includes('cached-evil') ? '★被放行' : '已忽略')
+    !tamperedModels.includes('cached-evil'), tamperedModels.includes('cached-evil') ? '★被放行' : '已忽略')
+
+  // A cache that lost its capacities must be rejected whole, not partly kept.
+  const { writeFile } = await import('node:fs/promises')
+  const gutted = {
+    version: 1,
+    savedAt: Date.now(),
+    models: PI_DEV.map(m => ({ id: m.id, api: m.api, name: m.name, input: m.input })),
+  }
+  await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(gutted), 'utf8')
+  const guttedRun = await runOnce('gutted')
+  ok('缓存缺少 contextWindow/maxTokens/cost 时整份拒绝（与在线同一标准）',
+    // installed plus the two bundled fallbacks — nothing from the gutted file.
+    guttedRun.length === INSTALLED.length + 2,
+    `缓存被掏空后目录 ${guttedRun.length}（installed ${INSTALLED.length} + fallback 2），未采纳任何残缺条目`)
+
+  // 延迟注册路径采纳的目录也必须落盘并记住 ETag
+  {
+    const { readFile: rf } = await import('node:fs/promises')
+    online = true
+    let hits = 0
+    const withEtag = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        hits += 1
+        return new Response(JSON.stringify(PI_DEV), { status: 200, headers: { etag: '"deferred-etag"' } })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const adapters = new Map()
+    let onEvt = null
+    // A collection for the adapter to hang off: without a registered adapter the
+    // deferred feed has no baseline to judge against and is correctly left
+    // alone, which is what the late-registration guard is for.
+    const lateBase = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let lateCurrent = lateBase
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? lateCurrent : undefined),
+      setProvider: p => { lateCurrent = p },
+      getModels: id => (id === 'opencode-go' ? lateCurrent.getModels() : []),
+    }
+    globalThis.fetch = withEtag
+    freshState()
+    const deferred = await import('./lib/index.js?deferred-cache')
+    await mount(deferred, {
+      llm: { adapters },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {},
+      effect: fn => { fn() },
+      on: (ev, fn) => { if (ev === 'llm/adapters-updated') onEvt = fn },
+    })
+    // The adapter registers after the first refresh, so the catalog is adopted
+    // by the deferred path rather than by a later poll.
+    adapters.set('opencode-go', { adapter: { current: () => ({ models: coll }) } })
+    onEvt?.()
+    await wait(); await wait(); await wait()
+
+    // The write is queued behind any earlier one, so poll for it rather than
+    // assume a fixed number of ticks is enough.
+    let saved = null
+    for (let i = 0; i < 30; i += 1) {
+      try {
+        const parsed = JSON.parse(await rf(join(dir, 'opencode-live-models-catalog.json'), 'utf8'))
+        if (parsed?.etag) { saved = parsed; break }
+      } catch { /* not written yet */ }
+      await wait()
+    }
+    ok('延迟采纳的目录同样落盘（此前这条路径漏掉了）',
+      saved !== null && Array.isArray(saved.models) && saved.models.length > 0,
+      saved ? `${saved.models.length} 条` : '文件不存在')
+    ok('延迟采纳的目录同样记住 ETag', saved?.etag === '"deferred-etag"', `${saved?.etag}`)
+  }
 
   globalThis.fetch = mainFetch
   if (prevDir === undefined) delete process.env.DSH_PROFILE_DIR
@@ -804,11 +886,11 @@ freshState()
   // test. This section is about endpoints and headers, not about size.
   const HOSTILE = [
     ...PI_DEV,
-    { id: 'evil-completions', name: 'Evil Completions', contextWindow: 1000, maxTokens: 500, api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
-    { id: 'evil-anthropic', name: 'Evil Anthropic', contextWindow: 1000, maxTokens: 500, api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
-    { id: 'evil-unknown-api', name: 'Evil Unknown', contextWindow: 1000, maxTokens: 500, api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
-    { id: 'evil-constructor-api', name: 'Evil Ctor', contextWindow: 1000, maxTokens: 500, api: 'constructor', type: 'chat' },
-    { id: 'evil-proto-api', name: 'Evil Proto', contextWindow: 1000, maxTokens: 500, api: '__proto__', type: 'chat' },
+    { id: 'evil-completions', name: 'Evil Completions', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
+    { id: 'evil-anthropic', name: 'Evil Anthropic', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
+    { id: 'evil-unknown-api', name: 'Evil Unknown', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
+    { id: 'evil-constructor-api', name: 'Evil Ctor', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'constructor', type: 'chat' },
+    { id: 'evil-proto-api', name: 'Evil Proto', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: '__proto__', type: 'chat' },
   ]
   globalThis.fetch = async (url) => {
     const u = String(url)
@@ -868,7 +950,7 @@ freshState()
   const MIXED = [
     ...PI_DEV,
     {
-      id: 'control-plane', name: 'Control Plane', contextWindow: 1000, maxTokens: 500, api: 'openai-completions', type: 'chat',
+      id: 'control-plane', name: 'Control Plane', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', type: 'chat',
       // every way a remote could try to steer a request
       baseUrl: 'https://evil.example/v1', url: 'https://evil.example', endpoint: 'https://evil.example',
       headers: { 'x-api-key': 'stolen' }, auth: { token: 'stolen' }, apiKey: 'stolen',
@@ -879,7 +961,7 @@ freshState()
     {
       // a capability this plugin has never heard of: must arrive, not be stripped
       id: 'future-model', api: 'openai-completions', type: 'chat',
-      name: 'Future Model', contextWindow: 1000, maxTokens: 500,
+      name: 'Future Model', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 },
       output: ['text', 'image'], promptCache: true, capabilities: { vision: true },
     },
   ]
@@ -1395,7 +1477,7 @@ freshState()
 
   // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
   {
-    const rows = [...PI_DEV, { id: 'hot-reload-new', name: 'Hot New', contextWindow: 2000, maxTokens: 1000, api: 'openai-completions', type: 'chat' }]
+    const rows = [...PI_DEV, { id: 'hot-reload-new', name: 'Hot New', contextWindow: 2000, maxTokens: 1000, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', type: 'chat' }]
     let poll = 0
     let catalogPolls = 0
     globalThis.fetch = async (url) => {
