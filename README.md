@@ -38,6 +38,11 @@ a response that is empty, malformed, or implausibly smaller than the last good
 one is refused rather than applied, so a bad fetch cannot quietly empty the
 picker.
 
+Mounting does not wait for them. The installed catalog plus the bundled
+fallbacks is already a correct catalog, so it is published the moment the plugin
+loads; the network refresh runs behind that and publishes again only if it
+changes something.
+
 ## Test
 
 ```sh

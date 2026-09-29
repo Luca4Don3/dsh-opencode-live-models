@@ -115,9 +115,24 @@ const triggerRefresh = () => { intervalFn?.() ; return new Promise(r => setTimeo
 
 const mod = await import('./lib/index.js')
 const wait = () => new Promise(r => setTimeout(r, 60))
-const firstRefresh = mod.apply(ctx)   // apply 返回首次刷新，可直接 await
-await firstRefresh
-await wait()
+
+/**
+ * Mount a plugin instance and let its background first refresh settle.
+ *
+ * `apply()` no longer returns the refresh — it publishes the installed catalog
+ * immediately and refreshes behind that, because mounting must not block on the
+ * network. Tests therefore wait for the effect rather than for the call.
+ * @param {any} plugin - the imported module.
+ * @param {any} mountCtx - the context to mount with.
+ * @param {number} [ticks] - how many event-loop turns to allow.
+ * @returns {Promise<void>} resolves once the background refresh has settled.
+ */
+async function mount(plugin, mountCtx, ticks = 5) {
+  plugin.apply(mountCtx)
+  for (let i = 0; i < ticks; i += 1) await wait()
+}
+
+await mount(mod, ctx)
 
 const merged = () => collection.getProvider('opencode-go').getModels()
 const ids = () => merged().map(m => m.id).sort()
@@ -327,7 +342,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   }
 freshState()
   const priced = await import('./lib/index.js?repriced')
-  await priced.apply(pCtx)
+  await mount(priced, pCtx)
   const emittedAfterBoot = pLogs.filter(([l]) => l === 'emit').length
 
   tick?.(); await wait()
@@ -339,11 +354,14 @@ freshState()
   tick?.(); await wait()
   const afterUnknownField = pLogs.filter(([l]) => l === 'emit').length
 
-  ok('首次发布必定 emit', emittedAfterBoot === 1, `${emittedAfterBoot} 次`)
-  ok('数据未变不 emit', sameData === 1, `${sameData} 次`)
-  ok('远端改 price / display name 会 emit', afterPriceChange === 2, `${afterPriceChange} 次`)
+  // Mounting publishes twice: once immediately from the installed catalog plus the
+  // bundled fallbacks, once when the background refresh lands. Both are real
+  // changes in what DSH can see, which is the point of publishing at mount.
+  ok('挂载即发布 + 刷新后再发布，共两次', emittedAfterBoot === 2, `${emittedAfterBoot} 次`)
+  ok('数据未变不 emit', sameData === 2, `${sameData} 次`)
+  ok('远端改 price / display name 会 emit', afterPriceChange === 3, `${afterPriceChange} 次`)
   ok('远端新增未知字段会 emit（透传的字段变化同样要抵达 consumer）',
-    afterUnknownField === 3, `${afterUnknownField} 次`)
+    afterUnknownField === 4, `${afterUnknownField} 次`)
   globalThis.fetch = mainFetch
 }
 
@@ -391,7 +409,7 @@ freshState()
   }
 freshState()
   const ordered = await import('./lib/index.js?reordered')
-  await ordered.apply(oCtx)
+  await mount(ordered, oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
   const orderBefore = base.getModels().map(m => m.id).join(',')
   const bootDescriptors = base.getModels().map(m => ({ ...m }))
@@ -416,10 +434,72 @@ freshState()
   ok('descriptor 集合与内容都没变，只有顺序变了',
     descriptorsBefore.size === descriptorsAfter.size && changedDescriptors.length === 0,
     `${descriptorsAfter.size} 个模型，其中内容变化 ${changedDescriptors.length} 个`)
-  ok('首次发布 emit', boot === 1, `${boot} 次`)
-  ok('顺序未变时不 emit', unchanged === 1, `${unchanged} 次`)
+  ok('挂载发布 + 刷新发布，共两次', boot === 2, `${boot} 次`)
+  ok('顺序未变时不 emit', unchanged === 2, `${unchanged} 次`)
   ok('仅顺序变化也 emit（fingerprint 不得按 id 排序抹平目录顺序）',
-    afterReorder === 2, `${afterReorder} 次`)
+    afterReorder === 3, `${afterReorder} 次`)
+  globalThis.fetch = mainFetch
+}
+
+// ── 6.8 挂载不阻塞：网络返回前目录已就绪 ───────────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  let release
+  const gate = new Promise(r => { release = r })
+  let catalogFetches = 0
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) {
+      catalogFetches += 1
+      await gate                       // the network is the slow part
+      return new Response(JSON.stringify(PI_DEV), { status: 200 })
+    }
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  const base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  let current = base
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? current : undefined),
+    setProvider: p => { current = p },
+    getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+  }
+  const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  const events = []
+  freshState()
+  const mod = await import('./lib/index.js?no-block')
+  mod.apply({
+    llm: { adapters },
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    emit: ev => events.push(ev),
+    effect: fn => { fn() },
+    on: () => {},
+  })
+  // Deliberately no wait: the network has not answered and never will inside
+  // this tick. Whatever the picker can show must already be published.
+  const immediate = coll.getModels('opencode-go').map(m => m.id)
+  const emittedNow = events.length
+
+  release()
+  await wait(); await wait(); await wait()
+  const settled = coll.getModels('opencode-go').map(m => m.id)
+
+  ok('挂载在网络返回前就已发布（不阻塞 DSH）', emittedNow >= 1 && immediate.length > INSTALLED.length,
+    `网络未返回时已发布 ${immediate.length} 个，emit ${emittedNow} 次`)
+  ok('此时目录是 installed + fallback，缺少远端模型属正常',
+    immediate.includes('space-bunny-free') && immediate.length < settled.length,
+    `挂载时 ${immediate.length} → 刷新后 ${settled.length}`)
+  ok('网络返回后目录补全并再次发布', settled.length > immediate.length && events.length > emittedNow,
+    `${settled.length} 个，emit 共 ${events.length} 次`)
+  ok('取数确实发生过（挂载只是不等它）', catalogFetches >= 1, `${catalogFetches} 次`)
   globalThis.fetch = mainFetch
 }
 
@@ -505,7 +585,7 @@ freshState()
     }
 freshState()
     const mod = await import(`./lib/index.js?${label}`)
-    await mod.apply(sCtx)
+    await mount(mod, sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
       models: () => base.getModels(),
@@ -602,7 +682,7 @@ freshState()
   }
 freshState()
   const hostile = await import('./lib/index.js?hostile')
-  await hostile.apply(hCtx)
+  await mount(hostile, hCtx)
   const got = base.getModels()
   const completions = got.find(m => m.id === 'evil-completions')
   const anthropic = got.find(m => m.id === 'evil-anthropic')
@@ -681,7 +761,7 @@ freshState()
   }
 freshState()
   const mixed = await import('./lib/index.js?mixed')
-  await mixed.apply(mCtx)
+  await mount(mixed, mCtx)
   tick?.(); await wait(); await wait()
   tick?.(); await wait(); await wait()
 
@@ -738,7 +818,7 @@ freshState()
   // remoteCatalog starts empty — the state of a first boot with no network.
 freshState()
   const fresh = await import('./lib/index.js?firstboot')
-  await fresh.apply(ctx2)
+  await mount(fresh, ctx2)
   const order2 = base2.getModels().map(m => m.id)
   const liveSet = new Set(LIVE_IDS)
   const installedOrder = INSTALLED.map(m => m.id).filter(id => liveSet.has(id))
@@ -803,7 +883,7 @@ freshState()
     }
 freshState()
     const mod = await import(`./lib/index.js?${label}`)
-    await mod.apply(sCtx)
+    await mount(mod, sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
       models: () => base.getModels(),
@@ -946,7 +1026,7 @@ freshState()
     }
 freshState()
     const mod = await import(`./lib/index.js?${label}`)
-    await mod.apply(cCtx)
+    await mount(mod, cCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
       models: () => base.getModels(),
@@ -1047,7 +1127,7 @@ freshState()
     }
     freshState()
     const mod = await import(`./lib/index.js?${label}`)
-    await mod.apply(sCtx)
+    await mount(mod, sCtx)
     const adapter = { current: () => ({ models: coll }) }
     const originalCurrent = adapter.current
     return {
@@ -1204,12 +1284,12 @@ freshState()
     // Deliberately no freshState(): this instance must adopt the slot the first
     // one left behind, which is the whole point of this section.
     const first = await import('./lib/index.js?hmr-first')
-    await first.apply(makeCtx([]))
+    await mount(first, makeCtx([]))
     const wrapped = coll.getProvider('opencode-go')
     const beforeReload = coll.getModels('opencode-go').map(m => m.id)
 
     const second = await import('./lib/index.js?hmr-second')
-    await second.apply(makeCtx([]))
+    await mount(second, makeCtx([]))
     const sameWrapper = coll.getProvider('opencode-go') === wrapped
     poll = 1   // the next poll is the one that carries the new descriptor
     tick?.(); await wait(); await wait(); await wait()
@@ -1283,14 +1363,13 @@ freshState()
     })
 
     const oldMod = await import('./lib/index.js?stale-old')
-    const oldApply = oldMod.apply(quiet())      // still blocked on the gate
+    oldMod.apply(quiet())                        // still blocked in-flight
     const newMod = await import('./lib/index.js?stale-new')
     phase = 'new'
-    await newMod.apply(quiet())
+    await mount(newMod, quiet())
     const shownByNew = coll.getModels('opencode-go').map(m => m.id).length
 
     release()
-    await oldApply
     await wait(); await wait(); await wait()
     const afterOld = coll.getModels('opencode-go').map(m => m.id)
 
@@ -1346,13 +1425,13 @@ freshState()
     // first one left behind.
     const firstEnv = makeEnv()
     const first = await import('./lib/index.js?order-old')
-    await first.apply(firstEnv.ctx)
+    await mount(first, firstEnv.ctx)
     const overlaid = coll.getModels('opencode-go').map(m => m.id).length
     const providerAfterMount = coll.getProvider('opencode-go')
 
     const secondEnv = makeEnv()
     const second = await import('./lib/index.js?order-new')
-    await second.apply(secondEnv.ctx)
+    await mount(second, secondEnv.ctx)
     const afterMount = coll.getModels('opencode-go').map(m => m.id).length
 
     // The old instance unloads *after* the new one has taken over.
@@ -1412,7 +1491,7 @@ freshState()
     const warns = []
     freshState()
     const mod = await import('./lib/index.js?stripped')
-    await mod.apply({
+    await mount(mod, {
       llm: { adapters },
       logger: {
         info: () => {},
@@ -1479,22 +1558,19 @@ freshState()
     const mod = await import('./lib/index.js?same-module-twice')
     const first = mod.apply(quiet())          // still blocked in-flight
     const secondCount = hits
-    // Without a per-generation guard this returns the *first* mount's promise,
-    // which is stuck on the gate — so race it rather than hang the suite.
-    const second = mod.apply(quiet())
-    const outcome = await Promise.race([
-      second.then(() => 'settled', () => 'rejected'),
-      wait(400).then(() => 'hung'),
-    ])
+    // Without a per-generation guard this would be handed the first mount's
+    // in-flight refresh, whose result is then dropped by the generation check —
+    // leaving the new mount with nothing and the picker on installed + fallback.
+    mod.apply(quiet())
     const hitsAfterSecond = hits
     release()
     await first
     await wait(); await wait(); await wait()
     const models = coll.getModels('opencode-go').map(m => m.id)
 
-    ok('同一模块二次 apply 会另起一轮刷新，不复用上一代的 in-flight Promise',
-      hitsAfterSecond > secondCount && outcome === 'settled',
-      `首次挂载已发 ${secondCount} 次，二次挂载后共 ${hitsAfterSecond} 次，二次结果 ${outcome}`)
+    ok('同一模块二次 apply 会另起一轮刷新，不复用上一代的 in-flight 请求',
+      hitsAfterSecond > secondCount,
+      `首次挂载已发 ${secondCount} 次，二次挂载后共 ${hitsAfterSecond} 次`)
     ok('二次挂载的首轮数据未被丢弃，目录完整',
       models.length > INSTALLED.length,
       `目录 ${models.length} 个（installed-only 全部在列）`)
