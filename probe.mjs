@@ -1929,9 +1929,12 @@ freshState()
     filled.generation === 4 && filled.warnedCacheWrite === false
       && filled.remoteCatalog === legacy.remoteCatalog && filled.liveModelIds === null,
     `generation=${filled.generation}, liveModelIds=${filled.liveModelIds}`)
+  // Compared against `legacy`, the object that was put into the slot — not
+  // against the slot itself, which `filled` was just read from and which would
+  // match a freshly-built copy just as happily.
   ok('补齐后就地修改同一个对象（实例间必须共享引用）',
-    filled === globalThis[STATE_KEY] && Object.getPrototypeOf(filled) === Object.prototype,
-    'state 未被替换')
+    filled === legacy,
+    filled === legacy ? '仍是放进去的那个对象' : '★被替换成了新对象，两个实例将各读各的')
 
   // The crash was a `.then()` on a missing field; reach the write queue.
   let queued = null
