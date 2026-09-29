@@ -43,12 +43,12 @@ fallbacks is already a correct catalog, so it is published the moment the plugin
 loads; the network refresh runs behind that and publishes again only if it
 changes something.
 
-The accepted catalog is also written to the profile directory and read back on
-the next start, so an outage does not cost you the models only Pi carries.
-Cached entries are re-validated on the way in, a cache older than a week is
-ignored, and one that cannot be written or read is simply skipped. Pi serves an
-ETag, so an unchanged catalog costs a conditional request rather than a full
-body.
+The accepted catalog is also written to disk and read back on the next start,
+so an outage does not cost you the models only Pi carries. It goes to the
+profile directory when DSH exposes one, otherwise to `~/.dsh`. Cached entries
+are re-validated on the way in, a cache older than a week is ignored, and one
+that cannot be written or read is simply skipped. Pi serves an ETag, so an
+unchanged catalog costs a conditional request rather than a full body.
 
 ## Test
 
