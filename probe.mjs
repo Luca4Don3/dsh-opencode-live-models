@@ -650,7 +650,6 @@ freshState()
     const hostile = { version: 1, savedAt: Date.now(), models: [{ id: 'cached-evil', api: 'constructor' }] }
     await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(hostile), 'utf8')
   } catch { /* asserted below */ }
-  const tampered = await runOnce('tampered')
   const tamperedModels = await runOnce('tampered')
   ok('缓存文件被篡改时按同样规则拒绝（api=constructor 不通过）',
     !tamperedModels.includes('cached-evil'), tamperedModels.includes('cached-evil') ? '★被放行' : '已忽略')
@@ -731,6 +730,91 @@ freshState()
       saved !== null && Array.isArray(saved.models) && saved.models.length > 0,
       saved ? `${saved.models.length} 条` : '文件不存在')
     ok('延迟采纳的目录同样记住 ETag', saved?.etag === '"deferred-etag"', `${saved?.etag}`)
+  }
+
+  // Two module instances, two adoptions, one shared state. The invariant is not
+  // "the last write wins" but "whatever is on disk is a pair that was actually
+  // adopted" — a catalog from one adoption with the ETag of another would be
+  // told 304 on the next start and keep serving the stale one forever.
+  {
+    const { readFile: rf2 } = await import('node:fs/promises')
+    const catPath = join(dir, 'opencode-live-models-catalog.json')
+    const baseOf = () => ({
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    })
+    const makeCollection = (state) => {
+      const base = baseOf()
+      let current = base
+      state.get = () => current.getModels().map(m => m.id)
+      return {
+        getProvider: id => (id === 'opencode-go' ? current : undefined),
+        setProvider: p => { current = p },
+        getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+      }
+    }
+
+    // Adoption A: the full catalog, tagged "etag-A".
+    const first = PI_DEV
+    // Adoption B: one model dropped, tagged "etag-B" — a different catalog, so a
+    // mismatched pair is detectable from the file alone.
+    const second = PI_DEV.filter(m => m.id !== 'muse-spark-1.3-contributor')
+
+    let which = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        const rows = which === 0 ? first : second
+        return new Response(JSON.stringify(rows), { status: 200, headers: { etag: `"etag-${which === 0 ? 'A' : 'B'}"` } })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+
+    const collA = makeCollection({ get: () => [] })
+    const collB = makeCollection({ get: () => [] })
+    const ctxFor = adapters => ({
+      llm: { adapters },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {}, effect: fn => { fn() }, on: () => {},
+    })
+
+    freshState()
+    which = 0
+    const modA = await import('./lib/index.js?pair-a')
+    await mount(modA, ctxFor(new Map([['opencode-go', { adapter: { current: () => ({ models: collA }) } }]])))
+
+    // A second instance — a hot reload — takes over the same state and adopts a
+    // different catalog while the first write may still be queued.
+    which = 1
+    const modB = await import('./lib/index.js?pair-b')
+    await mount(modB, ctxFor(new Map([['opencode-go', { adapter: { current: () => ({ models: collB }) } }]])))
+
+    let final = null
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        const parsed = JSON.parse(await rf2(catPath, 'utf8'))
+        if (parsed?.etag === '"etag-B"') { final = parsed; break }
+      } catch { /* not written yet */ }
+      await wait()
+    }
+
+    const aIds = new Set(first.map(m => m.id))
+    const bIds = new Set(second.map(m => m.id))
+    const onDisk = new Set(final?.models?.map(m => m.id) ?? [])
+    const isA = onDisk.size === aIds.size && [...aIds].every(id => onDisk.has(id))
+    const isB = onDisk.size === bIds.size && [...bIds].every(id => onDisk.has(id))
+    const paired = (isA && final?.etag === '"etag-A"') || (isB && final?.etag === '"etag-B"')
+
+    ok('跨模块实例：写队列共享，后写入的目录最终生效',
+      final?.etag === '"etag-B"' && isB,
+      `落盘 etag=${final?.etag}，目录${isB ? '与 B 一致' : isA ? '★是旧的 A' : '★两者都不是'}`)
+    ok('目录与 ETag 始终来自同一次采纳（不会拼出错配）',
+      paired,
+      `落盘组合 etag=${final?.etag} + ${isB ? '目录B' : isA ? '目录A' : '未知目录'}`)
   }
 
   globalThis.fetch = mainFetch
