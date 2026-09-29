@@ -12,7 +12,9 @@ DeepSeek Harness（DSH）自带的 pi-ai 模型目录可能跟不上 OpenCode Go
 dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 ```
 
-需要 DSH 0.1.5-rc.1 或更新版本。
+需要 DSH 0.1.5-rc.1 或更新版本，以及**本插件 0.1.2 或更新版本**。
+
+> **0.1.1 仅作版本记录保留，请勿安装。** 其中两个缺陷已在 0.1.2 修复：adapter 注册前到达的名单可能绕过规模校验而隐藏已安装模型；卸载后叠加层不会被撤除，插件已不再维护，选择器却仍显示那些模型。原地升级即可，无需先移除现有安装。
 
 ## 工作方式
 

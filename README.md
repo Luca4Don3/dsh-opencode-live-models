@@ -13,7 +13,13 @@ Add it from the DSH plugin page, or run:
 dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 ```
 
-Requires DSH 0.1.5-rc.1 or newer.
+Requires DSH 0.1.5-rc.1 or newer, and **0.1.2 or newer of this plugin**.
+
+> **0.1.1 is kept for the record — do not install it.** Two defects are fixed in
+> 0.1.2: a roster that arrives before the adapter registers can pass the size
+> guard and hide installed models, and unloading leaves the overlay installed, so
+> the picker keeps showing models the plugin is no longer maintaining. Upgrading
+> in place is enough; existing installs do not need to be removed first.
 
 ## How it works
 
