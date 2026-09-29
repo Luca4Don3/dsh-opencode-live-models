@@ -508,6 +508,7 @@ freshState()
     await mod.apply(sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
+      models: () => base.getModels(),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await new Promise(r => setTimeout(r, 60)) },
     }
@@ -569,11 +570,11 @@ freshState()
   // test. This section is about endpoints and headers, not about size.
   const HOSTILE = [
     ...PI_DEV,
-    { id: 'evil-completions', api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
-    { id: 'evil-anthropic', api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
-    { id: 'evil-unknown-api', api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
-    { id: 'evil-constructor-api', api: 'constructor', type: 'chat' },
-    { id: 'evil-proto-api', api: '__proto__', type: 'chat' },
+    { id: 'evil-completions', name: 'Evil Completions', contextWindow: 1000, maxTokens: 500, api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
+    { id: 'evil-anthropic', name: 'Evil Anthropic', contextWindow: 1000, maxTokens: 500, api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
+    { id: 'evil-unknown-api', name: 'Evil Unknown', contextWindow: 1000, maxTokens: 500, api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
+    { id: 'evil-constructor-api', name: 'Evil Ctor', contextWindow: 1000, maxTokens: 500, api: 'constructor', type: 'chat' },
+    { id: 'evil-proto-api', name: 'Evil Proto', contextWindow: 1000, maxTokens: 500, api: '__proto__', type: 'chat' },
   ]
   globalThis.fetch = async (url) => {
     const u = String(url)
@@ -633,7 +634,7 @@ freshState()
   const MIXED = [
     ...PI_DEV,
     {
-      id: 'control-plane', api: 'openai-completions', type: 'chat',
+      id: 'control-plane', name: 'Control Plane', contextWindow: 1000, maxTokens: 500, api: 'openai-completions', type: 'chat',
       // every way a remote could try to steer a request
       baseUrl: 'https://evil.example/v1', url: 'https://evil.example', endpoint: 'https://evil.example',
       headers: { 'x-api-key': 'stolen' }, auth: { token: 'stolen' }, apiKey: 'stolen',
@@ -805,6 +806,7 @@ freshState()
     await mod.apply(sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
+      models: () => base.getModels(),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => {
         poll += 1
@@ -928,6 +930,7 @@ freshState()
     await mod.apply(cCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
+      models: () => base.getModels(),
       warns: () => cLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await wait(); await wait() },
     }
@@ -1139,7 +1142,7 @@ freshState()
 
   // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
   {
-    const rows = [...PI_DEV, { id: 'hot-reload-new', api: 'openai-completions', type: 'chat', name: 'Hot New' }]
+    const rows = [...PI_DEV, { id: 'hot-reload-new', name: 'Hot New', contextWindow: 2000, maxTokens: 1000, api: 'openai-completions', type: 'chat' }]
     let poll = 0
     let catalogPolls = 0
     globalThis.fetch = async (url) => {
@@ -1353,6 +1356,129 @@ freshState()
     ok('当前实例卸载时仍能正常还原',
       adapter.current === originalCurrent && coll.getProvider('opencode-go') === base,
       `adapter ${adapter.current === originalCurrent ? '已恢复' : '★未恢复'}，provider ${coll.getProvider('opencode-go') === base ? '已恢复' : '★未恢复'}`)
+  }
+
+  // (g) 同数量但丢字段的响应：必须整份回退，不能采纳残缺描述符
+  {
+    // Same 29 ids, same supported protocols, nothing else. The size gate cannot
+    // see this — the count never moved — so the catalog would be replaced with
+    // descriptors that have no capacities at all.
+    const stripped = PI_DEV.map(m => ({ id: m.id, api: m.api }))
+    const probeId = 'deepseek-v4.1-flash'
+    let poll = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        return new Response(JSON.stringify(poll === 0 ? PI_DEV : stripped), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const warns = []
+    freshState()
+    const mod = await import('./lib/index.js?stripped')
+    await mod.apply({
+      llm: { adapters },
+      logger: {
+        info: () => {},
+        warn: (...a) => warns.push(a.join(' ')),
+        debug: () => {},
+      },
+      emit: () => {}, effect: fn => { fn() }, on: () => {},
+    })
+    const models = () => coll.getModels('opencode-go')
+    const goodCount = models().length
+    const before = models().find(m => m.id === probeId)
+    poll = 1
+    tick?.(); await wait(); await wait(); await wait()
+    const after = models().find(m => m.id === probeId)
+
+    ok('同数量但缺能力字段的响应被整份拒绝（并说明原因）',
+      warns.some(w => w.includes('incomplete descriptors')),
+      warns.find(w => w.includes('incomplete'))?.slice(0, 120) ?? '无')
+    ok('拒绝后目录回到 last-known-good', models().length === goodCount, `${goodCount} → ${models().length}`)
+    ok('保留下来的描述符仍带完整能力字段',
+      after !== undefined && after.contextWindow === before?.contextWindow && after.maxTokens === before?.maxTokens,
+      `contextWindow ${after?.contextWindow} / maxTokens ${after?.maxTokens}`)
+  }
+
+  // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
+  {
+    let release
+    const gate = new Promise(r => { release = r })
+    let hits = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        hits += 1
+        if (hits === 1) await gate
+        return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const quiet = () => ({
+      llm: { adapters },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {}, effect: () => {}, on: () => {},
+    })
+
+    freshState()
+    // One module object, two mounts — no freshState(), same instance this time.
+    const mod = await import('./lib/index.js?same-module-twice')
+    const first = mod.apply(quiet())          // still blocked in-flight
+    const secondCount = hits
+    // Without a per-generation guard this returns the *first* mount's promise,
+    // which is stuck on the gate — so race it rather than hang the suite.
+    const second = mod.apply(quiet())
+    const outcome = await Promise.race([
+      second.then(() => 'settled', () => 'rejected'),
+      wait(400).then(() => 'hung'),
+    ])
+    const hitsAfterSecond = hits
+    release()
+    await first
+    await wait(); await wait(); await wait()
+    const models = coll.getModels('opencode-go').map(m => m.id)
+
+    ok('同一模块二次 apply 会另起一轮刷新，不复用上一代的 in-flight Promise',
+      hitsAfterSecond > secondCount && outcome === 'settled',
+      `首次挂载已发 ${secondCount} 次，二次挂载后共 ${hitsAfterSecond} 次，二次结果 ${outcome}`)
+    ok('二次挂载的首轮数据未被丢弃，目录完整',
+      models.length > INSTALLED.length,
+      `目录 ${models.length} 个（installed-only 全部在列）`)
   }
 
   globalThis.fetch = mainFetch
