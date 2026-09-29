@@ -1280,6 +1280,81 @@ freshState()
       `目录 ${afterOld.length} 个（installed-only 全部在列）`)
   }
 
+  // (f) 新实例先挂载、旧实例后卸载：旧实例不得拆掉新实例的补丁
+  {
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    const adapter = { current: () => ({ models: coll }) }
+    const originalCurrent = adapter.current
+    const adapters = new Map([['opencode-go', { adapter }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const makeEnv = () => {
+      const disposers = []
+      return {
+        ctx: {
+          llm: { adapters },
+          logger: { info: () => {}, warn: () => {}, debug: () => {} },
+          emit: () => {},
+          effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+          on: () => {},
+        },
+        dispose: () => { for (const d of disposers) d() },
+      }
+    }
+
+    // Deliberately no freshState(): the second instance must adopt the slot the
+    // first one left behind.
+    const firstEnv = makeEnv()
+    const first = await import('./lib/index.js?order-old')
+    await first.apply(firstEnv.ctx)
+    const overlaid = coll.getModels('opencode-go').map(m => m.id).length
+    const providerAfterMount = coll.getProvider('opencode-go')
+
+    const secondEnv = makeEnv()
+    const second = await import('./lib/index.js?order-new')
+    await second.apply(secondEnv.ctx)
+    const afterMount = coll.getModels('opencode-go').map(m => m.id).length
+
+    // The old instance unloads *after* the new one has taken over.
+    firstEnv.dispose()
+    await wait(); await wait()
+    const afterOldUnload = coll.getModels('opencode-go').map(m => m.id).length
+
+    ok('新挂载后旧卸载：旧实例不拆掉新实例的 provider',
+      coll.getProvider('opencode-go') === providerAfterMount,
+      coll.getProvider('opencode-go') === providerAfterMount ? '仍是新实例的 provider' : '★已被还原')
+    ok('新挂载后旧卸载：adapter.current 仍被包装',
+      adapter.current !== originalCurrent,
+      adapter.current === originalCurrent ? '★被旧实例退掉了' : '仍保持包装')
+    ok('新挂载后旧卸载：目录仍是叠加后的数量，未退回原安装目录',
+      afterOldUnload === afterMount && afterMount === overlaid && afterOldUnload > INSTALLED.length,
+      `挂载后 ${afterMount} → 旧卸载后 ${afterOldUnload}（期望 ${overlaid}）`)
+
+    // The current instance must still be able to clean up after itself.
+    secondEnv.dispose()
+    ok('当前实例卸载时仍能正常还原',
+      adapter.current === originalCurrent && coll.getProvider('opencode-go') === base,
+      `adapter ${adapter.current === originalCurrent ? '已恢复' : '★未恢复'}，provider ${coll.getProvider('opencode-go') === base ? '已恢复' : '★未恢复'}`)
+  }
+
   globalThis.fetch = mainFetch
 }
 
