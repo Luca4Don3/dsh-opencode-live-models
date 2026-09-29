@@ -503,6 +503,160 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
+// ── 6.9 ETag 条件请求 ───────────────────────────────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  const ETAG = '"v1-fixture"'
+  let poll = 0
+  const seen = []
+  let rosterCond = 'not-called'
+  globalThis.fetch = async (url, init) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) {
+      const cond = init?.headers?.['if-none-match'] ?? null
+      seen.push(cond)
+      // Second poll: the server would answer 304 for the ETag it handed out.
+      if (cond === ETAG) return new Response(null, { status: 304, headers: { etag: ETAG } })
+      return new Response(JSON.stringify(PI_DEV), { status: 200, headers: { etag: ETAG } })
+    }
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      rosterCond = init?.headers?.['if-none-match'] ?? null
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+  const base = {
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: () => {}, streamSimple: () => {},
+  }
+  let current = base
+  const coll = {
+    getProvider: id => (id === 'opencode-go' ? current : undefined),
+    setProvider: p => { current = p },
+    getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+  }
+  const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  const logs = []
+  const events = []
+  freshState()
+  const mod = await import('./lib/index.js?etag')
+  await mount(mod, {
+    llm: { adapters },
+    logger: {
+      info: () => {},
+      warn: (...a) => logs.push(['warn', a.join(' ')]),
+      debug: (...a) => logs.push(['debug', a.join(' ')]),
+    },
+    emit: ev => events.push(ev),
+    effect: fn => { fn() },
+    on: () => {},
+  })
+  const afterFirst = coll.getModels('opencode-go').map(m => m.id)
+  poll = 1
+  tick?.(); await wait(); await wait(); await wait()
+  const afterSecond = coll.getModels('opencode-go').map(m => m.id)
+
+  ok('首次请求不带条件头（还没有 ETag）', seen[0] === null, `${seen[0]}`)
+  ok('第二次请求带上 If-None-Match', seen[1] === ETAG, `${seen[1]}`)
+  ok('304 不被当作失败，也不重新发布',
+    afterSecond.length === afterFirst.length
+      && !logs.some(([l, m]) => l === 'warn' && !m.includes('have no descriptor yet')),
+    `${afterFirst.length} → ${afterSecond.length}；warn: ${logs.map(([, m]) => m.slice(0, 70)).join(' | ') || '无'}`)
+  ok('304 被记录下来', logs.some(([, m]) => m.includes('304')), logs.find(([, m]) => m.includes('304')) ?? '无')
+  ok('roster 不发条件头（网关没有 ETag 可用）', rosterCond === null, `${rosterCond}`)
+  globalThis.fetch = mainFetch
+}
+
+// ── 6.10 持久化 last-known-good：重启后离线也能用上一轮目录 ──────────────────
+{
+  const mainFetch = globalThis.fetch
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'ocg-probe-'))
+  // CACHE_DIR is read when the module evaluates, so this has to be in place
+  // before the instance below is imported — which is exactly what a real DSH
+  // start looks like.
+  const prevDir = process.env.DSH_PROFILE_DIR
+  process.env.DSH_PROFILE_DIR = dir
+
+  let online = true
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (!online) throw new Error('simulated outage')
+    if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+
+  const runOnce = async (label) => {
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    freshState()
+    const mod = await import(`./lib/index.js?persist-${label}`)
+    await mount(mod, {
+      llm: { adapters },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {}, effect: fn => { fn() }, on: () => {},
+    })
+    return coll.getModels('opencode-go').map(m => m.id)
+  }
+
+  const first = await runOnce('online')
+  let written = null
+  try {
+    written = JSON.parse(await readFile(join(dir, 'opencode-live-models-catalog.json'), 'utf8'))
+  } catch { /* asserted below */ }
+  ok('接受后的目录被写入缓存文件', written !== null && Array.isArray(written.models) && written.models.length > 0,
+    written ? `${written.models.length} 条` : '文件不存在')
+  ok('缓存只保存 sanitized 之后的描述符（无可劫持的 baseUrl）',
+    Array.isArray(written?.models)
+      && written.models.every(m => typeof m.baseUrl === 'string' && m.baseUrl.startsWith('https://opencode.ai/'))
+      && written.models.every(m => m.headers === undefined),
+    written ? `baseUrl 样本 ${written.models[0]?.baseUrl}` : '—')
+
+  // A restart with the network down: the last known good catalog is all there is.
+  online = false
+  const offline = await runOnce('offline')
+  ok('重启后断网仍能恢复上一轮的完整目录', offline.length === first.length && offline.length > INSTALLED.length,
+    `在线 ${first.length} → 离线重启 ${offline.length}`)
+  ok('离线时用上的是缓存，不是只剩 fallback',
+    offline.includes('deepseek-v4.1-flash') && offline.length > INSTALLED.length,
+    `${offline.length} 个（含 fallback）`)
+
+  // A tampered cache must not survive the same validation a live response gets.
+  try {
+    const { writeFile } = await import('node:fs/promises')
+    const hostile = { version: 1, savedAt: Date.now(), models: [{ id: 'cached-evil', api: 'constructor' }] }
+    await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(hostile), 'utf8')
+  } catch { /* asserted below */ }
+  const tampered = await runOnce('tampered')
+  ok('缓存文件被篡改时按同样规则拒绝（api=constructor 不通过）',
+    !tampered.includes('cached-evil'), tampered.includes('cached-evil') ? '★被放行' : '已忽略')
+
+  globalThis.fetch = mainFetch
+  if (prevDir === undefined) delete process.env.DSH_PROFILE_DIR
+  else process.env.DSH_PROFILE_DIR = prevDir
+  await rm(dir, { recursive: true, force: true })
+}
+
 // ── 7. roster 熔断：异常缩水要两轮才承认 ───────────────────────────────────
 {
   // 'stale' is a one-id roster. Applying the previous behavior, that silently
