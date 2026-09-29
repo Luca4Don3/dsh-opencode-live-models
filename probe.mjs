@@ -654,6 +654,38 @@ freshState()
   ok('缓存文件被篡改时按同样规则拒绝（api=constructor 不通过）',
     !tamperedModels.includes('cached-evil'), tamperedModels.includes('cached-evil') ? '★被放行' : '已忽略')
 
+  // A restart that *is* online: the very first request must already be
+  // conditional. The cache read and that request race for the validator, and one
+  // that wins by microseconds saves nothing — the ETag only went to the trouble
+  // of being persisted to be used on the first poll, not the second.
+  {
+    const { writeFile: wf } = await import('node:fs/promises')
+    const CACHED_ETAG = '"restart-etag"'
+    await wf(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify({
+      version: 1, savedAt: Date.now(), etag: CACHED_ETAG, models: PI_DEV,
+    }), 'utf8')
+
+    const seen = []
+    online = true
+    globalThis.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        seen.push(init?.headers?.['if-none-match'] ?? null)
+        return new Response(JSON.stringify(PI_DEV), { status: 200, headers: { etag: CACHED_ETAG } })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+
+    const onlineFirst = await runOnce('online-restart')
+    ok('联网重启：第一次 pi.dev 请求就带上 If-None-Match',
+      seen[0] === CACHED_ETAG,
+      `首次请求头 ${JSON.stringify(seen[0])}（缓存里的 ETag 是 ${CACHED_ETAG}）`)
+    ok('联网重启：目录仍完整', onlineFirst.length > INSTALLED.length, `${onlineFirst.length} 个`)
+  }
+
   // A cache that lost its capacities must be rejected whole, not partly kept.
   const { writeFile } = await import('node:fs/promises')
   const gutted = {
@@ -663,10 +695,11 @@ freshState()
   }
   await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(gutted), 'utf8')
   const guttedRun = await runOnce('gutted')
-  ok('缓存缺少 contextWindow/maxTokens/cost 时整份拒绝（与在线同一标准）',
-    // installed plus the two bundled fallbacks — nothing from the gutted file.
-    guttedRun.length === INSTALLED.length + 2,
-    `缓存被掏空后目录 ${guttedRun.length}（installed ${INSTALLED.length} + fallback 2），未采纳任何残缺条目`)
+  ok('缓存缺少 contextWindow/maxTokens/cost 时整份拒绝，退回网络数据',
+    // Rejected whole, so the catalog is what the network returned — complete,
+    // not the gutted file quietly half-applied.
+    guttedRun.length === 34 && INSTALLED_IDS.every(i => guttedRun.includes(i)),
+    `缓存被掏空后目录 ${guttedRun.length}（网络补齐的完整目录）`)
 
   // 延迟注册路径采纳的目录也必须落盘并记住 ETag
   {
@@ -1876,15 +1909,19 @@ freshState()
     freshState()
     // One module object, two mounts — no freshState(), same instance this time.
     const mod = await import('./lib/index.js?same-module-twice')
-    const first = mod.apply(quiet())          // still blocked in-flight
+    mod.apply(quiet())
+    // The first refresh waits on the cache read, so give it room to actually
+    // start before counting — otherwise the guard under test is never exercised
+    // and the numbers below are all zero.
+    await wait(); await wait(); await wait()
     const secondCount = hits
     // Without a per-generation guard this would be handed the first mount's
     // in-flight refresh, whose result is then dropped by the generation check —
     // leaving the new mount with nothing and the picker on installed + fallback.
     mod.apply(quiet())
+    await wait(); await wait(); await wait()
     const hitsAfterSecond = hits
     release()
-    await first
     await wait(); await wait(); await wait()
     const models = coll.getModels('opencode-go').map(m => m.id)
 
