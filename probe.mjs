@@ -1899,6 +1899,53 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
+// ── 9. 继承旧版本状态：缺失字段必须补齐 ────────────────────────────────────
+//
+// Last, on purpose: it swaps the shared slot for a hand-made 0.1.5 state and
+// loads a module against it. Every earlier section drives its refreshes through
+// globals this would repoint.
+{
+  const STATE_KEY = Symbol.for('dsh-opencode-live-models.state')
+  const legacy = {
+    remoteCatalog: new Map(), liveModelIds: null, pendingShrink: null,
+    pendingCatalogShrink: null, deferredRoster: null, deferredCatalog: null,
+    publishedCatalog: null, hooks: new Map(), providers: new Map(),
+    warnedUnknownFields: new Set(), warnedCacheWrite: false, merge: null,
+    generation: 4,
+    // Absent exactly as 0.1.5 left them: cacheWriteTail, cacheWriteSeq,
+    // catalogEtag, lastDriftWarning.
+  }
+  globalThis[STATE_KEY] = legacy
+  // Loading the module is what performs the top-up.
+  await import('./lib/index.js?legacy-fill')
+  const filled = globalThis[STATE_KEY]
+
+  ok('继承旧版本状态：缺失的字段被补上',
+    filled.cacheWriteTail !== undefined && filled.cacheWriteSeq === 0
+      && filled.catalogEtag === null && filled.lastDriftWarning === null,
+    `cacheWriteTail=${typeof filled.cacheWriteTail}, cacheWriteSeq=${filled.cacheWriteSeq}, `
+    + `catalogEtag=${filled.catalogEtag}, lastDriftWarning=${filled.lastDriftWarning}`)
+  ok('补齐不覆盖旧状态里已有的值（显式 null 也保留）',
+    filled.generation === 4 && filled.warnedCacheWrite === false
+      && filled.remoteCatalog === legacy.remoteCatalog && filled.liveModelIds === null,
+    `generation=${filled.generation}, liveModelIds=${filled.liveModelIds}`)
+  ok('补齐后就地修改同一个对象（实例间必须共享引用）',
+    filled === globalThis[STATE_KEY] && Object.getPrototypeOf(filled) === Object.prototype,
+    'state 未被替换')
+
+  // The crash was a `.then()` on a missing field; reach the write queue.
+  let queued = null
+  try {
+    filled.cacheWriteTail = filled.cacheWriteTail.then(() => { queued = 'ok' }, () => { queued = 'ok' })
+    await filled.cacheWriteTail
+  } catch (error) {
+    queued = `★${error.message}`
+  }
+  ok('在旧状态之上进入写队列不会抛未处理异常', queued === 'ok', `${queued}`)
+
+  delete globalThis[STATE_KEY]
+}
+
 let failed = 0
 for (const r of results) {
   if (!r.pass) failed += 1
