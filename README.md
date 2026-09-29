@@ -27,6 +27,20 @@ Requires DSH 0.1.5-rc.1 or newer.
 The plugin updates pi-ai's `opencode-go` model list. Requests continue through
 the installed pi-ai transport and authentication.
 
+Both feeds are fetched in parallel and neither is trusted to shrink the catalog:
+a response that is empty, malformed, or implausibly smaller than the last good
+one is refused rather than applied, so a bad fetch cannot quietly empty the
+picker.
+
+## Test
+
+```sh
+npm test
+```
+
+Runs `probe.mjs` against fixtures committed in `test/fixtures/`, captured from
+the live endpoints — no network or setup needed after a fresh clone.
+
 ## Limitations
 
 - Models without descriptors do not appear in the picker.

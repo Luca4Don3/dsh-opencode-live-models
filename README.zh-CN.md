@@ -22,6 +22,16 @@ dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 
 插件更新 pi-ai 中 `opencode-go` 的模型列表。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
 
+两个数据源并行获取，且都不被允许"缩小"目录：空、格式错误或明显小于上一轮正常值的响应会被拒绝而不是采纳，因此一次坏响应无法悄悄清空选择器。
+
+## 测试
+
+```sh
+npm test
+```
+
+用 `test/fixtures/` 中随仓库提交的固件运行 `probe.mjs`——固件抓取自真实端点，新克隆后无需联网或任何准备。
+
 ## 限制
 
 - 没有描述符的模型不会出现在选择器中。

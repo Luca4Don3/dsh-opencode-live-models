@@ -4,6 +4,9 @@
   "description": "Keep OpenCode Go models fresh without waiting for bundled pi-ai catalog updates",
   "license": "MIT",
   "type": "module",
+  "scripts": {
+    "test": "node probe.mjs"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",

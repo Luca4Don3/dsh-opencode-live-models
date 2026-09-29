@@ -2,16 +2,20 @@
  * 只读探针：用**真实端点数据**验证目录合并逻辑。跑之前先 mock 掉 fetch，让插件
  * 以为自己在离线环境，再检查它在各种 roster/catalog 组合下的行为。
  * 断言全部基于实测的 OCG /models 与 pi.dev 数据，不含编造的模型。
+ *
+ * 固件随仓库一起提交（test/fixtures/），所以新克隆后 `npm test` 即可运行，
+ * 不需要先联网。刷新固件见 README 的 Probe 一节。
  */
 import { existsSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /**
- * 探针固件的位置：默认取仓库同级的 `.temp/ocg-fixtures`，可用 OCG_FIXTURES 覆盖。
- * 探针不硬编码任何人的机器路径。
+ * 探针固件的位置：默认取仓库内的 `test/fixtures`，可用 OCG_FIXTURES 指向别处。
+ * 相对本文件定位，因此从任何工作目录运行都成立。
  */
 const FIXTURES = process.env.OCG_FIXTURES
-  ?? resolve(process.cwd(), '..', '.temp', 'ocg-fixtures')
+  ?? resolve(dirname(fileURLToPath(import.meta.url)), 'test', 'fixtures')
 
 /**
  * 读取一个固件 JSON。
@@ -372,6 +376,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   await ordered.apply(oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
   const orderBefore = base.getModels().map(m => m.id).join(',')
+  const bootDescriptors = base.getModels().map(m => ({ ...m }))
 
   tick?.(); await wait()
   const unchanged = oLogs.filter(([l]) => l === 'emit').length
@@ -382,7 +387,17 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
 
   ok('目录顺序真的变了', orderBefore !== orderAfter,
     `${orderBefore.split(',').slice(0, 3)} -> ${orderAfter.split(',').slice(0, 3)} …`)
-  ok('descriptor 一个字节没变', JSON.stringify(JSON.parse(JSON.stringify(PI_DEV))) === JSON.stringify(JSON.parse(JSON.stringify(PI_DEV))))
+  // Compare the descriptors DSH actually holds across the two polls, rather
+  // than a fixture against a copy of itself, which is true by construction and
+  // would stay green no matter what the code under test did.
+  const descriptorsBefore = new Map(bootDescriptors.map(m => [m.id, JSON.stringify(m)]))
+  const descriptorsAfter = new Map(base.getModels().map(m => [m.id, JSON.stringify(m)]))
+  const changedDescriptors = [...descriptorsAfter]
+    .filter(([id, json]) => descriptorsBefore.get(id) !== json)
+    .map(([id]) => id)
+  ok('descriptor 集合与内容都没变，只有顺序变了',
+    descriptorsBefore.size === descriptorsAfter.size && changedDescriptors.length === 0,
+    `${descriptorsAfter.size} 个模型，其中内容变化 ${changedDescriptors.length} 个`)
   ok('首次发布 emit', boot === 1, `${boot} 次`)
   ok('顺序未变时不 emit', unchanged === 1, `${unchanged} 次`)
   ok('仅顺序变化也 emit（fingerprint 不得按 id 排序抹平目录顺序）',
@@ -530,16 +545,22 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
 // ── 7.6 安全边界：远端不能决定请求去向与 headers ────────────────────────────
 {
   const mainFetch = globalThis.fetch
+  // The real catalog travels with the hostile entries: a 3-entry response would
+  // now be (correctly) refused as a suspicious shrink, and that is a different
+  // test. This section is about endpoints and headers, not about size.
   const HOSTILE = [
+    ...PI_DEV,
     { id: 'evil-completions', api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
     { id: 'evil-anthropic', api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
     { id: 'evil-unknown-api', api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
+    { id: 'evil-constructor-api', api: 'constructor', type: 'chat' },
+    { id: 'evil-proto-api', api: '__proto__', type: 'chat' },
   ]
   globalThis.fetch = async (url) => {
     const u = String(url)
     if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(HOSTILE), { status: 200 })
     if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
-      return new Response(JSON.stringify({ data: HOSTILE.map(m => ({ id: m.id })) }), { status: 200 })
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
@@ -572,6 +593,13 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     JSON.stringify({ c: completions?.headers, a: anthropic?.headers }))
   ok('未知协议的模型被丢弃（不存在的 transport 不注册）',
     got.find(m => m.id === 'evil-unknown-api') === undefined)
+  ok('api="constructor" 的模型被丢弃（不能靠 Object.prototype 通过协议校验）',
+    got.find(m => m.id === 'evil-constructor-api') === undefined,
+    JSON.stringify(got.find(m => m.id === 'evil-constructor-api')))
+  ok('api="__proto__" 的模型被丢弃', got.find(m => m.id === 'evil-proto-api') === undefined)
+  ok('目录中没有任何模型携带非字符串 baseUrl',
+    got.every(m => typeof m.baseUrl === 'string'),
+    got.filter(m => typeof m.baseUrl !== 'string').map(m => `${m.id}=${typeof m.baseUrl}`).join(', ') || '全部为字符串')
   globalThis.fetch = mainFetch
 }
 
@@ -583,6 +611,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
 
   const mainFetch = globalThis.fetch
   const MIXED = [
+    ...PI_DEV,
     {
       id: 'control-plane', api: 'openai-completions', type: 'chat',
       // every way a remote could try to steer a request
@@ -603,7 +632,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     const u = String(url)
     if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(MIXED), { status: 200 })
     if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
-      return new Response(JSON.stringify({ data: MIXED.map(m => ({ id: m.id })) }), { status: 200 })
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
@@ -695,6 +724,127 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     order2.slice(0, 5).join(', '))
   ok('首次启动即降级时两个 fallback 模型仍可路由',
     order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'))
+}
+
+// ── 8.6 目录缩水熔断 + 首次启动下限 + 并行取数 ─────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  const SMALL_CATALOG = PI_DEV.slice(0, 4)
+
+  /**
+   * Fresh instance whose pi.dev and OCG responses are driven by a script of
+   * `{ catalog, roster }` pairs, one per poll.
+   * @param {string} label - unique import query.
+   * @param {Array<{ catalog: any, roster: string[], delay?: number }>} script -
+   * what each successive poll should return.
+   * @returns {Promise<any>} probe handles.
+   */
+  async function scripted(label, script) {
+    let poll = 0
+    const timers = []
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      const step = script[Math.min(poll, script.length - 1)]
+      poll += 1
+      if (step.delay) await new Promise(r => timers.push(setTimeout(r, step.delay)))
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(step.catalog), { status: 200 })
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: step.roster.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    let base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? base : undefined),
+      setProvider: p => { Object.assign(base, p) },
+      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    const sLogs = []
+    const sCtx = {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: {
+        info: (...a) => sLogs.push(['info', a.join(' ')]),
+        warn: (...a) => sLogs.push(['warn', a.join(' ')]),
+        debug: (...a) => sLogs.push(['debug', a.join(' ')]),
+      },
+      emit: () => {}, effect: fn => fn(), on: () => {},
+    }
+    const mod = await import(`./lib/index.js?${label}`)
+    await mod.apply(sCtx)
+    return {
+      snap: () => base.getModels().map(m => m.id),
+      warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
+      step: async () => { tick?.(); await wait(); await wait(); await wait() },
+    }
+  }
+
+  // (a) pi.dev 29 -> 4：非空但严重缩水，也要两轮确认
+  {
+    const s = await scripted('cat-shrink', [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: SMALL_CATALOG, roster: LIVE_IDS },
+      { catalog: SMALL_CATALOG, roster: LIVE_IDS },
+    ])
+    const good = s.snap().length
+    await s.step()
+    const held = s.snap().length
+    const warned = s.warns().some(w => w.includes('catalog suspicious shrink'))
+    await s.step()
+    const accepted = s.snap().length
+    ok('pi.dev 29 → 4：第一次被挡下且目录不变', held === good && warned, `${good} -> ${held}（告警 ${warned ? '有' : '无'}）`)
+    ok('pi.dev 同样的缩水第二次出现才被接受', accepted < held, `${held} -> ${accepted}`)
+  }
+
+  // (b) 缩水后恢复正常：取消待确认
+  {
+    const s = await scripted('cat-recover', [
+      { catalog: PI_DEV, roster: LIVE_IDS },
+      { catalog: SMALL_CATALOG, roster: LIVE_IDS },
+      { catalog: PI_DEV, roster: LIVE_IDS },
+    ])
+    const good = s.snap().length
+    await s.step()
+    const held = s.snap().length
+    await s.step()
+    const recovered = s.snap().length
+    ok('pi.dev 缩水后恢复：目录回到全量，待确认被取消',
+      held === good && recovered === good, `${good} -> ${held} -> ${recovered}`)
+  }
+
+  // (c) 冷启动就拿到 1 个 ID 的名单：没有 last-known-good 兜底，仍必须拒绝
+  {
+    const s = await scripted('roster-cold', [
+      { catalog: PI_DEV, roster: ['gpt-5.6-luna'] },
+    ])
+    const snap = s.snap()
+    ok('冷启动即拿到单条目名单时被拒（不靠 last-known-good 兜底）',
+      snap.every(id => INSTALLED_IDS.includes(id) || PI_DEV.some(m => m.id === id)),
+      `目录 ${snap.length} 个`)
+    ok('冷启动单条目名单有告警', s.warns().some(w => w.includes('roster suspicious shrink')),
+      s.warns().find(w => w.includes('roster suspicious shrink'))?.slice(0, 110) ?? '无')
+  }
+
+  // (d) 两个端点是并行取的：总耗时应接近较慢的那个，而非两者之和
+  {
+    const DELAY = 300
+    const t0 = Date.now()
+    const s = await scripted('parallel', [
+      { catalog: PI_DEV, roster: LIVE_IDS, delay: DELAY },
+    ])
+    const elapsed = Date.now() - t0
+    ok('两个上游并行请求（总耗时 ≈ 单个延迟，而非两倍）',
+      elapsed < DELAY * 1.8,
+      `${DELAY}ms × 2 串行需 ≈${DELAY * 2}ms，实际 ${elapsed}ms`)
+    ok('并行取数后目录仍正确', s.snap().length > 30, `${s.snap().length} 个模型`)
+  }
+
+  globalThis.fetch = mainFetch
 }
 
 // ── 8.5 pi.dev 目录熔断：空/畸形响应不得覆盖 last-known-good ────────────────
