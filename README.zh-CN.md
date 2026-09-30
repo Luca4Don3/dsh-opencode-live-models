@@ -30,6 +30,8 @@ dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 
 被采纳的目录还会落盘，下次启动时读回，因此一次故障不会让你失去那些只有 Pi 才有的模型。DSH 暴露了 profile 目录就写在那里，否则写 `~/.dsh`。缓存读入时会重新校验，超过一周的缓存直接忽略，读写失败也只是跳过。Pi 提供 ETag，所以目录没变时只发一个条件请求，而不是整个响应体。
 
+**怎么看日志。** pi.dev 返回 304 时，插件保留目录和 ETag、不重写文件，所以缓存的 mtime 不变是**预期结果，不是失败**。`catalog updated` 只表示**可见目录发生了变化**，不代表别的：启动时从磁盘恢复缓存也可能触发这一行，而它没出现也说明不了刷新是否成功；首次 `catalog published` 的数量同样不是固定值。受控重启后要确认的是三件事——叠加层已安装、出现了 `catalog published`、且没有 `pi.dev catalog refresh failed`。
+
 ## 测试
 
 ```sh

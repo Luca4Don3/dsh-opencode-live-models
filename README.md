@@ -50,6 +50,15 @@ are re-validated on the way in, a cache older than a week is ignored, and one
 that cannot be written or read is simply skipped. Pi serves an ETag, so an
 unchanged catalog costs a conditional request rather than a full body.
 
+**Reading the log.** On a `304` the plugin keeps both the catalog and the ETag
+and does not rewrite the file, so the cache's mtime staying put is the expected
+result, not a failure. `catalog updated` marks a change in the *visible* catalog
+and nothing else — restoring the cache at start can produce it too, and its
+absence says nothing about whether the refresh worked. A first `catalog
+published` count is not a fixed number either. What to check after a controlled
+restart is that the overlay was installed, a `catalog published` appears, and no
+`pi.dev catalog refresh failed` does.
+
 ## Test
 
 ```sh
