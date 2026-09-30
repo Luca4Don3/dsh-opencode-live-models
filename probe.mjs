@@ -6,9 +6,26 @@
  * 固件随仓库一起提交（test/fixtures/），所以新克隆后 `npm test` 即可运行，
  * 不需要先联网。刷新固件见 README 的 Probe 一节。
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+/**
+ * Point the plugin's cache at a throwaway directory before any instance loads.
+ *
+ * The cache location is resolved once per module instance and memoized, so a
+ * scenario that changed the variable later only redirected *new* instances —
+ * every earlier one was already writing to the real `~/.dsh` cache. The result
+ * was a suite whose outcome depended on whether the developer had DSH running:
+ * a leftover catalog got restored at mount, so the first publish was no longer
+ * "installed plus fallbacks" and the emit counts came out one higher. The suite
+ * must read the same empty disk every time, so it gets its own and never the
+ * real one.
+ */
+const CACHE_SANDBOX = mkdtempSync(join(tmpdir(), 'dsh-live-models-probe-'))
+process.env.DSH_PROFILE_DIR = CACHE_SANDBOX
+process.on('exit', () => { rmSync(CACHE_SANDBOX, { recursive: true, force: true }) })
 
 /**
  * 探针固件的位置：默认取仓库内的 `test/fixtures`，可用 OCG_FIXTURES 指向别处。
@@ -47,6 +64,11 @@ const ok = (name, pass, detail = '') => results.push({ name, pass, detail })
 const STATE_KEY = Symbol.for('dsh-opencode-live-models.state')
 function freshState() {
   delete globalThis[STATE_KEY]
+  // The on-disk cache too. Scenarios share one sandbox directory, so a catalog
+  // written by an earlier one is restored at the next mount and the picker
+  // starts from something other than installed-plus-fallbacks — which shifts
+  // the first publish and every emit count after it.
+  rmSync(join(CACHE_SANDBOX, 'opencode-live-models-catalog.json'), { force: true })
 }
 
 // 真实数据
@@ -54,10 +76,21 @@ const liveData = fixture('ocg-models.json')
 const OCG_LIVE = liveData.data
 const LIVE_IDS = OCG_LIVE.map(m => m.id).sort()
 const PI_DEV = fixture('pi-dev-opencode-go.json')
-const CATALOG_085 = fixture('opencode-go-0.85.1.json')
+// The installed catalog is copied out of the pi-ai that ships inside the app
+// currently installed, so a DSH upgrade that moves pi-ai forward shows up here as
+// a real change in what the picker has to keep — not as a number nobody updated.
+const CATALOG_INSTALLED = fixture('opencode-go-0.87.1.json')
+const CATALOG_SOURCE = 'pi-ai 0.87.1 (from DSH 0.2.0-rc.2)'
 const INSTALLED = []
-for (const models of Object.values(CATALOG_085)) INSTALLED.push(...Object.values(models))
+for (const models of Object.values(CATALOG_INSTALLED)) INSTALLED.push(...Object.values(models))
 const INSTALLED_IDS = INSTALLED.map(m => m.id).sort()
+/**
+ * What the picker should hold once both feeds are applied: the installed catalog
+ * as a floor, with Pi's additions layered on. Derived rather than written down,
+ * because the installed catalog moves with every pi-ai release and a hard-coded
+ * number here is a test that fails for a reason nobody wrote it for.
+ */
+const EXPECTED_UNION_SIZE = new Set([...INSTALLED_IDS, ...PI_DEV.map(m => m.id)]).size
 
 // ── 受控 fetch ────────────────────────────────────────────────────────────────
 let mode = 'live'
@@ -137,6 +170,21 @@ await mount(mod, ctx)
 const merged = () => collection.getProvider('opencode-go').getModels()
 const ids = () => merged().map(m => m.id).sort()
 
+// ── 0. 固件与当前 pi-ai 的关系 ──────────────────────────────────────────────
+{
+  const required = ['name', 'contextWindow', 'maxTokens', 'cost', 'input']
+  const incomplete = INSTALLED.filter(m => required.some(f => m[f] === undefined))
+  const protos = [...new Set(INSTALLED.map(m => m.api))]
+  ok(`已安装目录固件自带全部必需字段（${CATALOG_SOURCE}）`, incomplete.length === 0,
+    `${INSTALLED.length} 个模型，缺字段 ${incomplete.length} 个`)
+  ok('已安装目录只含本插件支持的协议（不会因上游新增协议而整份被拒）',
+    protos.every(p => ['openai-completions', 'openai-responses', 'anthropic-messages'].includes(p)),
+    protos.join(', '))
+  ok('已安装目录的规模与 Pi 目录同量级（缩水阈值不会误判）',
+    Math.abs(INSTALLED.length - PI_DEV.length) <= PI_DEV.length / 2,
+    `installed ${INSTALLED.length} / pi.dev ${PI_DEV.length}`)
+}
+
 // ── 1. 核心目标：两个关键模型出现 ────────────────────────────────────────────
 ok('provider 被包装', patched >= 1, `setProvider 调用 ${patched} 次`)
 ok('DeepSeek V4.1 Flash 进入目录', ids().includes('deepseek-v4.1-flash'))
@@ -159,7 +207,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
 // ── 2. 不丢官方客户端独有的模型 ──────────────────────────────────────────────
 {
   const missing = INSTALLED_IDS.filter(i => !ids().includes(i))
-  ok('0.85.1 原有的 27 个模型一个不丢', missing.length === 0, `缺: ${missing.join(',') || '无'}`)
+  ok('已安装目录的模型一个不丢', missing.length === 0, `缺: ${missing.join(',') || '无'}`)
 }
 
 // ── 3. 覆盖率 ────────────────────────────────────────────────────────────────
@@ -698,7 +746,7 @@ freshState()
   ok('缓存缺少 contextWindow/maxTokens/cost 时整份拒绝，退回网络数据',
     // Rejected whole, so the catalog is what the network returned — complete,
     // not the gutted file quietly half-applied.
-    guttedRun.length === 34 && INSTALLED_IDS.every(i => guttedRun.includes(i)),
+    guttedRun.length === EXPECTED_UNION_SIZE && INSTALLED_IDS.every(i => guttedRun.includes(i)),
     `缓存被掏空后目录 ${guttedRun.length}（网络补齐的完整目录）`)
 
   // 延迟注册路径采纳的目录也必须落盘并记住 ETag
