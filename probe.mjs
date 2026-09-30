@@ -187,21 +187,9 @@ const ids = () => merged().map(m => m.id).sort()
 
 // ── 0.9 计费字段完整 + fallback 不覆盖内置描述符 ────────────────────────────
 {
-  // Goes through the real path — fetchPiCatalog -> normalizeRemoteModel -> the
-  // required-field gate — rather than re-implementing the gate here, which would
-  // stay green no matter what the plugin did with `output`.
-  const partials = {
-    output: (m) => ({ ...m, cost: { input: m.cost.input } }),
-    cacheRead: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output } }),
-    cacheWrite: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead } }),
-  }
-  // With the catalog refused the picker keeps the installed floor (minus
-  // whatever the roster retires) plus the fallbacks that fill a real gap.
-  const liveSet = new Set(LIVE_IDS)
-  const fallbackNeeded = ['deepseek-v4.1-flash', 'space-bunny-free']
-    .filter(id => !INSTALLED_IDS.includes(id)).length
-  const expectedWhenRefused = INSTALLED_IDS.filter(id => liveSet.has(id)).length + fallbackNeeded
-  for (const [drop, mutate] of Object.entries(partials)) {
+  // A helper that drives the real gate with whatever catalog it is handed, so a
+  // test states a payload rather than restating the rule it is checking.
+  const adopt = async (label, catalog) => {
     const mainFetch = globalThis.fetch
     const warns = []
     const base = {
@@ -218,7 +206,7 @@ const ids = () => merged().map(m => m.id).sort()
     globalThis.fetch = async (url) => {
       const u = String(url)
       if (u.startsWith('https://pi.dev/')) {
-        return new Response(JSON.stringify(PI_DEV.map(mutate)), { status: 200, headers: { etag: '"partial"' } })
+        return new Response(JSON.stringify(catalog), { status: 200, headers: { etag: `"synthetic-${label}"` } })
       }
       if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
         return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
@@ -228,20 +216,72 @@ const ids = () => merged().map(m => m.id).sort()
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     freshState()
-    const mod = await import(`./lib/index.js?cost-${drop}`)
+    const mod = await import(`./lib/index.js?gate-${label}`)
     await mount(mod, {
       llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
       logger: {
         info: () => {}, warn: (...a) => warns.push(a.join(' ')),
-        debug: (...a) => warns.push(a.join(' ')),
+        debug: () => {},
       },
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
     const got = coll.getModels('opencode-go')
+    globalThis.fetch = mainFetch
+    return { got, warns }
+  }
+
+  // With the catalog refused the picker keeps the installed floor (minus
+  // whatever the roster retires) plus the fallbacks that fill a real gap.
+  const liveSet = new Set(LIVE_IDS)
+  const fallbackNeeded = ['deepseek-v4.1-flash', 'space-bunny-free']
+    .filter(id => !INSTALLED_IDS.includes(id)).length
+  const expectedWhenRefused = INSTALLED_IDS.filter(id => liveSet.has(id)).length + fallbackNeeded
+
+  // Goes through the real path — fetchPiCatalog -> normalizeRemoteModel -> the
+  // required-field gate — rather than re-implementing the gate here, which would
+  // stay green no matter what the plugin did with `output`.
+  const partials = {
+    output: (m) => ({ ...m, cost: { input: m.cost.input } }),
+    cacheRead: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output } }),
+    cacheWrite: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead } }),
+  }
+  // With the catalog refused the picker keeps the installed floor (minus
+  // whatever the roster retires) plus the fallbacks that fill a real gap.
+  for (const [drop, mutate] of Object.entries(partials)) {
+    const { got, warns } = await adopt(`cost-${drop}`, PI_DEV.map(mutate))
     ok(`cost 缺 ${drop} 的远端目录被整份拒绝（目录退回内置 + 兜底）`,
       got.length === expectedWhenRefused && warns.some(w => w.includes('incomplete descriptors')),
       `目录 ${got.length}（应为 ${expectedWhenRefused}，完整时 ${EXPECTED_UNION_SIZE}），warn: ${warns.find(w => w.includes('incomplete'))?.slice(0, 70) ?? '无'}`)
-    globalThis.fetch = mainFetch
+  }
+
+  // Tiered pricing, via a **synthetic** entry. Neither OCG fixture has tiers
+  // today, so this is a guard on a path, not a reproduction of a response —
+  // stated here so nobody later reads the scenario as evidence that upstream
+  // does this. pi-ai swaps in the whole tier object once a usage threshold is
+  // crossed, so a tier missing a rate bills NaN exactly as the base rates do,
+  // just later and only for long conversations.
+  {
+    const withTiers = (tiers) => PI_DEV.map((m, i) => (
+      i === 0 ? { ...m, cost: { ...m.cost, tiers } } : m
+    ))
+    const complete = await adopt('tier-complete', withTiers([{
+      inputTokensAbove: 200000,
+      input: 2, output: 6, cacheRead: 0.2, cacheWrite: 3,
+    }]))
+    ok('合成条目：tier 四个费率齐全时整份被采纳（正常的分层定价不会被误拒）',
+      complete.got.length === EXPECTED_UNION_SIZE,
+      `目录 ${complete.got.length}（完整应为 ${EXPECTED_UNION_SIZE}）`)
+
+    for (const [what, tiers] of [
+      ['output', [{ inputTokensAbove: 200000, input: 2, cacheRead: 0.2, cacheWrite: 3 }]],
+      ['cacheWrite', [{ inputTokensAbove: 200000, input: 2, output: 6, cacheRead: 0.2 }]],
+      ['tiers-not-an-array', { inputTokensAbove: 200000, input: 2, output: 6, cacheRead: 0.2, cacheWrite: 3 }],
+    ]) {
+      const bad = await adopt(`tier-bad-${what}`, withTiers(tiers))
+      ok(`合成条目：tier 缺 ${what}被整份拒绝`,
+        bad.got.length === expectedWhenRefused && bad.warns.some(w => w.includes('incomplete descriptors')),
+        `目录 ${bad.got.length}（应为 ${expectedWhenRefused}）；告警: ${bad.warns.map(w => w.slice(0, 90)).join(' | ') || '无'}`)
+    }
   }
   // The bundled fallbacks must fill a gap, never overrule the installed catalog.
   // Only reachable when Pi is unreachable — while the remote catalog loads, Pi's

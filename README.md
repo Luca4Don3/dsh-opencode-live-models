@@ -55,9 +55,14 @@ and does not rewrite the file, so the cache's mtime staying put is the expected
 result, not a failure. `catalog updated` marks a change in the *visible* catalog
 and nothing else — restoring the cache at start can produce it too, and its
 absence says nothing about whether the refresh worked. A first `catalog
-published` count is not a fixed number either. What to check after a controlled
-restart is that the overlay was installed, a `catalog published` appears, and no
-`pi.dev catalog refresh failed` does.
+published` count is not a fixed number either.
+
+What to check after a controlled restart: the overlay was installed, a `catalog
+published` appeared, and no `pi.dev catalog refresh failed` did — **but wait for
+the first refresh to finish before looking for that warning.** The two requests
+run in parallel with an 8s timeout each, and the failure is only recorded once
+both settle, so the absence of a warning right after `catalog published` means
+nothing yet. Allow the timeout window before concluding anything.
 
 ## Test
 
