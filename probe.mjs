@@ -185,6 +185,109 @@ const ids = () => merged().map(m => m.id).sort()
     `installed ${INSTALLED.length} / pi.dev ${PI_DEV.length}`)
 }
 
+// ── 0.9 计费字段完整 + fallback 不覆盖内置描述符 ────────────────────────────
+{
+  // Goes through the real path — fetchPiCatalog -> normalizeRemoteModel -> the
+  // required-field gate — rather than re-implementing the gate here, which would
+  // stay green no matter what the plugin did with `output`.
+  const partials = {
+    output: (m) => ({ ...m, cost: { input: m.cost.input } }),
+    cacheRead: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output } }),
+    cacheWrite: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead } }),
+  }
+  // With the catalog refused the picker keeps the installed floor (minus
+  // whatever the roster retires) plus the fallbacks that fill a real gap.
+  const liveSet = new Set(LIVE_IDS)
+  const fallbackNeeded = ['deepseek-v4.1-flash', 'space-bunny-free']
+    .filter(id => !INSTALLED_IDS.includes(id)).length
+  const expectedWhenRefused = INSTALLED_IDS.filter(id => liveSet.has(id)).length + fallbackNeeded
+  for (const [drop, mutate] of Object.entries(partials)) {
+    const mainFetch = globalThis.fetch
+    const warns = []
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        return new Response(JSON.stringify(PI_DEV.map(mutate)), { status: 200, headers: { etag: '"partial"' } })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    let tick = null
+    globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+    freshState()
+    const mod = await import(`./lib/index.js?cost-${drop}`)
+    await mount(mod, {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: {
+        info: () => {}, warn: (...a) => warns.push(a.join(' ')),
+        debug: (...a) => warns.push(a.join(' ')),
+      },
+      emit: () => {}, effect: fn => { fn() }, on: () => {},
+    })
+    const got = coll.getModels('opencode-go')
+    ok(`cost 缺 ${drop} 的远端目录被整份拒绝（目录退回内置 + 兜底）`,
+      got.length === expectedWhenRefused && warns.some(w => w.includes('incomplete descriptors')),
+      `目录 ${got.length}（应为 ${expectedWhenRefused}，完整时 ${EXPECTED_UNION_SIZE}），warn: ${warns.find(w => w.includes('incomplete'))?.slice(0, 70) ?? '无'}`)
+    globalThis.fetch = mainFetch
+  }
+  // The bundled fallbacks must fill a gap, never overrule the installed catalog.
+  // Only reachable when Pi is unreachable — while the remote catalog loads, Pi's
+  // own entry already wins, so asserting on the healthy path proves nothing.
+  {
+    const mainFetch = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) throw new Error('simulated pi.dev outage')
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => {}, streamSimple: () => {},
+    }
+    let current = base
+    const coll = {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+    globalThis.setInterval = () => ({ unref() {} })
+    freshState()
+    const mod = await import('./lib/index.js?fallback-shadow')
+    await mount(mod, {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      emit: () => {}, effect: fn => { fn() }, on: () => {},
+    })
+    const installedEntry = INSTALLED.find(m => m.id === 'deepseek-v4.1-flash')
+    const served = coll.getModels('opencode-go').find(m => m.id === 'deepseek-v4.1-flash')
+    const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny-free')
+    ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（不被 fallback 覆盖）',
+      installedEntry?.inputLimits !== undefined && served?.inputLimits !== undefined,
+      `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}（fallback 无此字段，覆盖即可判定）`)
+    ok('Pi 不可达时，fallback 仍补上内置目录没有的模型',
+      gapFilled !== undefined && !INSTALLED_IDS.includes('space-bunny-free'),
+      `space-bunny-free 由 fallback 提供=${gapFilled !== undefined}`)
+    globalThis.fetch = mainFetch
+  }
+}
+
 // ── 1. 核心目标：两个关键模型出现 ────────────────────────────────────────────
 ok('provider 被包装', patched >= 1, `setProvider 调用 ${patched} 次`)
 ok('DeepSeek V4.1 Flash 进入目录', ids().includes('deepseek-v4.1-flash'))
@@ -1051,11 +1154,11 @@ freshState()
   // test. This section is about endpoints and headers, not about size.
   const HOSTILE = [
     ...PI_DEV,
-    { id: 'evil-completions', name: 'Evil Completions', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
-    { id: 'evil-anthropic', name: 'Evil Anthropic', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
-    { id: 'evil-unknown-api', name: 'Evil Unknown', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
-    { id: 'evil-constructor-api', name: 'Evil Ctor', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'constructor', type: 'chat' },
-    { id: 'evil-proto-api', name: 'Evil Proto', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: '__proto__', type: 'chat' },
+    { id: 'evil-completions', name: 'Evil Completions', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'openai-completions', baseUrl: 'https://evil.example/v1', headers: { 'x-api-key': 'stolen' }, type: 'chat' },
+    { id: 'evil-anthropic', name: 'Evil Anthropic', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'anthropic-messages', baseUrl: 'https://evil.example', headers: { authorization: 'Bearer stolen' }, type: 'chat' },
+    { id: 'evil-unknown-api', name: 'Evil Unknown', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'some-future-transport', baseUrl: 'https://evil.example', type: 'chat' },
+    { id: 'evil-constructor-api', name: 'Evil Ctor', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'constructor', type: 'chat' },
+    { id: 'evil-proto-api', name: 'Evil Proto', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: '__proto__', type: 'chat' },
   ]
   globalThis.fetch = async (url) => {
     const u = String(url)
@@ -1115,7 +1218,7 @@ freshState()
   const MIXED = [
     ...PI_DEV,
     {
-      id: 'control-plane', name: 'Control Plane', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', type: 'chat',
+      id: 'control-plane', name: 'Control Plane', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'openai-completions', type: 'chat',
       // every way a remote could try to steer a request
       baseUrl: 'https://evil.example/v1', url: 'https://evil.example', endpoint: 'https://evil.example',
       headers: { 'x-api-key': 'stolen' }, auth: { token: 'stolen' }, apiKey: 'stolen',
@@ -1126,7 +1229,7 @@ freshState()
     {
       // a capability this plugin has never heard of: must arrive, not be stripped
       id: 'future-model', api: 'openai-completions', type: 'chat',
-      name: 'Future Model', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0 },
+      name: 'Future Model', contextWindow: 1000, maxTokens: 500, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       output: ['text', 'image'], promptCache: true, capabilities: { vision: true },
     },
   ]
@@ -1642,7 +1745,7 @@ freshState()
 
   // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
   {
-    const rows = [...PI_DEV, { id: 'hot-reload-new', name: 'Hot New', contextWindow: 2000, maxTokens: 1000, input: ['text'], cost: { input: 0, output: 0 }, api: 'openai-completions', type: 'chat' }]
+    const rows = [...PI_DEV, { id: 'hot-reload-new', name: 'Hot New', contextWindow: 2000, maxTokens: 1000, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: 'openai-completions', type: 'chat' }]
     let poll = 0
     let catalogPolls = 0
     globalThis.fetch = async (url) => {
