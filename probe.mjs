@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
  * every earlier one was already writing to the real `~/.dsh` cache. The result
  * was a suite whose outcome depended on whether the developer had DSH running:
  * a leftover catalog got restored at mount, so the first publish was no longer
- * "installed plus fallbacks" and the emit counts came out one higher. The suite
+ * "the installed catalog alone" and the emit counts came out one higher. The suite
  * must read the same empty disk every time, so it gets its own and never the
  * real one.
  */
@@ -66,7 +66,7 @@ function freshState() {
   delete globalThis[STATE_KEY]
   // The on-disk cache too. Scenarios share one sandbox directory, so a catalog
   // written by an earlier one is restored at the next mount and the picker
-  // starts from something other than installed-plus-fallbacks — which shifts
+  // starts from something other than the installed catalog alone — which shifts
   // the first publish and every emit count after it.
   rmSync(join(CACHE_SANDBOX, 'opencode-live-models-catalog.json'), { force: true })
 }
@@ -94,8 +94,15 @@ const EXPECTED_UNION_SIZE = new Set([...INSTALLED_IDS, ...PI_DEV.map(m => m.id)]
 
 // ── 受控 fetch ────────────────────────────────────────────────────────────────
 let mode = 'live'
-globalThis.fetch = async (url) => {
+/**
+ * Every request the plugin actually issued, so a test can assert on what went
+ * out over the wire rather than on a constant's value in isolation.
+ * @type {{ url: string, userAgent: string | null }[]}
+ */
+const requests = []
+globalThis.fetch = async (url, init) => {
   const u = String(url)
+  requests.push({ url: u, userAgent: init?.headers?.['user-agent'] ?? null })
   if (u.startsWith('https://pi.dev/')) {
     if (mode === 'no-pidev') throw new Error('simulated pi.dev outage')
     return new Response(JSON.stringify(PI_DEV), { status: 200 })
@@ -183,9 +190,38 @@ const ids = () => merged().map(m => m.id).sort()
   ok('已安装目录的规模与 Pi 目录同量级（缩水阈值不会误判）',
     Math.abs(INSTALLED.length - PI_DEV.length) <= PI_DEV.length / 2,
     `installed ${INSTALLED.length} / pi.dev ${PI_DEV.length}`)
+
+  // `RATE_FIELDS` in lib/index.js is a written mirror of pi-ai's billing table,
+  // and this is what keeps the mirror honest. Derived from the fixture, not
+  // written down: a hard-coded expectation would pass on the very fixture
+  // refresh it exists to catch. A new rate reaching the installed catalog means
+  // `calculateCost` may read it, and the plugin's cost gate would then be
+  // validating a subset of what actually gets billed.
+  const rateKeys = new Set()
+  for (const m of INSTALLED) for (const k of Object.keys(m.cost ?? {})) rateKeys.add(k)
+  ok('已安装目录的 cost 字段集与 RATE_FIELDS 一致（计费表变了要重读 calculateCost）',
+    [...rateKeys].sort().join() === ['cacheRead', 'cacheWrite', 'input', 'output'].join(),
+    `固件里的 cost 字段：${[...rateKeys].sort().join(', ') || '(无)'}`)
 }
 
-// ── 0.9 计费字段完整 + fallback 不覆盖内置描述符 ────────────────────────────
+// ── 0.8 user-agent 里的版本不得与 package.json 漂移 ─────────────────────────
+{
+  // Derived from the manifest rather than written down, because the whole point
+  // is that the two cannot disagree: a hard-coded expected version here would
+  // pass on the bump that forgot to update the plugin, which is the failure
+  // being tested for.
+  const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+  const expected = `${pkg.name}/${pkg.version}`
+  const sent = [...new Set(requests.map(r => r.userAgent))]
+  ok('发出的 user-agent 带的是 package.json 的当前版本', sent.length === 1 && sent[0] === expected,
+    `${requests.length} 个请求，UA 为 ${sent.join(', ') || '(无)'}；package.json 是 ${expected}`)
+  // Both feeds are asked in the same poll, so one UA for two URLs is also the
+  // check that neither endpoint is being called with an identity of its own.
+  ok('两个数据源用同一个 user-agent', new Set(requests.map(r => r.url)).size === 2,
+    [...new Set(requests.map(r => r.url))].join('  '))
+}
+
+// ── 0.9 计费字段完整：缺一个 rate 就整份拒绝 ───────────────────────────────
 {
   // A helper that drives the real gate with whatever catalog it is handed, so a
   // test states a payload rather than restating the rule it is checking.
@@ -230,12 +266,11 @@ const ids = () => merged().map(m => m.id).sort()
     return { got, warns }
   }
 
-  // With the catalog refused the picker keeps the installed floor (minus
-  // whatever the roster retires) plus the fallbacks that fill a real gap.
+  // With the catalog refused the picker keeps exactly the installed floor, minus
+  // whatever the roster has retired. Nothing is bundled, so there is no third
+  // contribution to account for.
   const liveSet = new Set(LIVE_IDS)
-  const fallbackNeeded = ['deepseek-v4.1-flash', 'space-bunny-free']
-    .filter(id => !INSTALLED_IDS.includes(id)).length
-  const expectedWhenRefused = INSTALLED_IDS.filter(id => liveSet.has(id)).length + fallbackNeeded
+  const expectedWhenRefused = INSTALLED_IDS.filter(id => liveSet.has(id)).length
 
   // Goes through the real path — fetchPiCatalog -> normalizeRemoteModel -> the
   // required-field gate — rather than re-implementing the gate here, which would
@@ -245,11 +280,10 @@ const ids = () => merged().map(m => m.id).sort()
     cacheRead: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output } }),
     cacheWrite: (m) => ({ ...m, cost: { input: m.cost.input, output: m.cost.output, cacheRead: m.cost.cacheRead } }),
   }
-  // With the catalog refused the picker keeps the installed floor (minus
-  // whatever the roster retires) plus the fallbacks that fill a real gap.
+  // Same floor as above, restated next to the loop that exercises it.
   for (const [drop, mutate] of Object.entries(partials)) {
     const { got, warns } = await adopt(`cost-${drop}`, PI_DEV.map(mutate))
-    ok(`cost 缺 ${drop} 的远端目录被整份拒绝（目录退回内置 + 兜底）`,
+    ok(`cost 缺 ${drop} 的远端目录被整份拒绝（目录退回已安装目录）`,
       got.length === expectedWhenRefused && warns.some(w => w.includes('incomplete descriptors')),
       `目录 ${got.length}（应为 ${expectedWhenRefused}，完整时 ${EXPECTED_UNION_SIZE}），warn: ${warns.find(w => w.includes('incomplete'))?.slice(0, 70) ?? '无'}`)
   }
@@ -283,9 +317,10 @@ const ids = () => merged().map(m => m.id).sort()
         `目录 ${bad.got.length}（应为 ${expectedWhenRefused}）；告警: ${bad.warns.map(w => w.slice(0, 90)).join(' | ') || '无'}`)
     }
   }
-  // The bundled fallbacks must fill a gap, never overrule the installed catalog.
-  // Only reachable when Pi is unreachable — while the remote catalog loads, Pi's
-  // own entry already wins, so asserting on the healthy path proves nothing.
+  // Nothing is bundled any more, so there is no local copy that could shadow the
+  // installed catalog, and none that could fill a gap either. Only measurable when
+  // Pi is unreachable: while the remote catalog loads, Pi's own entry already
+  // wins, so asserting on the healthy path would prove nothing.
   {
     const mainFetch = globalThis.fetch
     globalThis.fetch = async (url) => {
@@ -309,7 +344,7 @@ const ids = () => merged().map(m => m.id).sort()
     }
     globalThis.setInterval = () => ({ unref() {} })
     freshState()
-    const mod = await import('./lib/index.js?fallback-shadow')
+    const mod = await import('./lib/index.js?no-bundled-descriptors')
     await mount(mod, {
       llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -318,12 +353,12 @@ const ids = () => merged().map(m => m.id).sort()
     const installedEntry = INSTALLED.find(m => m.id === 'deepseek-v4.1-flash')
     const served = coll.getModels('opencode-go').find(m => m.id === 'deepseek-v4.1-flash')
     const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny-free')
-    ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（不被 fallback 覆盖）',
+    ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（没有本地副本可覆盖它）',
       installedEntry?.inputLimits !== undefined && served?.inputLimits !== undefined,
-      `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}（fallback 无此字段，覆盖即可判定）`)
-    ok('Pi 不可达时，fallback 仍补上内置目录没有的模型',
-      gapFilled !== undefined && !INSTALLED_IDS.includes('space-bunny-free'),
-      `space-bunny-free 由 fallback 提供=${gapFilled !== undefined}`)
+      `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}`)
+    ok('Pi 不可达时不会凭空补出模型（插件不再内置任何描述符）',
+      gapFilled === undefined && !INSTALLED_IDS.includes('space-bunny-free'),
+      `space-bunny-free 出现在目录里=${gapFilled !== undefined}`)
     globalThis.fetch = mainFetch
   }
 }
@@ -447,7 +482,11 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   logs.length = 0
   await triggerRefresh()
   await wait(); await wait()
-  ok('pi.dev 不可达时两个 fallback 模型仍在',
+  // Pi's feed is the only source of descriptors now, so an outage falls back to
+  // the last catalog it did serve — kept in memory, and on disk across restarts.
+  // Both ids below are in it, which is the point: they survive on the strength of
+  // Pi's catalog, not of a copy bundled in this file.
+  ok('pi.dev 不可达时退回 last-known-good 目录',
     ids().includes('deepseek-v4.1-flash') && ids().includes('space-bunny-free'))
   ok('pi.dev 失败有告警且不静默',
     logs.some(([l, m]) => l === 'warn' && m.includes('pi.dev catalog refresh failed')))
@@ -545,8 +584,8 @@ freshState()
   tick?.(); await wait()
   const afterUnknownField = pLogs.filter(([l]) => l === 'emit').length
 
-  // Mounting publishes twice: once immediately from the installed catalog plus the
-  // bundled fallbacks, once when the background refresh lands. Both are real
+  // Mounting publishes twice: once immediately from the installed catalog alone,
+  // once when the background refresh lands. Both are real
   // changes in what DSH can see, which is the point of publishing at mount.
   ok('挂载即发布 + 刷新后再发布，共两次', emittedAfterBoot === 2, `${emittedAfterBoot} 次`)
   ok('数据未变不 emit', sameData === 2, `${sameData} 次`)
@@ -683,10 +722,11 @@ freshState()
   await wait(); await wait(); await wait()
   const settled = coll.getModels('opencode-go').map(m => m.id)
 
-  ok('挂载在网络返回前就已发布（不阻塞 DSH）', emittedNow >= 1 && immediate.length > INSTALLED.length,
-    `网络未返回时已发布 ${immediate.length} 个，emit ${emittedNow} 次`)
-  ok('此时目录是 installed + fallback，缺少远端模型属正常',
-    immediate.includes('space-bunny-free') && immediate.length < settled.length,
+  ok('挂载在网络返回前就已发布（不阻塞 DSH）',
+    emittedNow >= 1 && immediate.length === INSTALLED.length,
+    `网络未返回时已发布 ${immediate.length} 个（= 已安装目录 ${INSTALLED.length}），emit ${emittedNow} 次`)
+  ok('此时目录就是已安装目录，缺少远端模型属正常',
+    !immediate.includes('space-bunny-free') && immediate.length < settled.length,
     `挂载时 ${immediate.length} → 刷新后 ${settled.length}`)
   ok('网络返回后目录补全并再次发布', settled.length > immediate.length && events.length > emittedNow,
     `${settled.length} 个，emit 共 ${events.length} 次`)
@@ -831,9 +871,9 @@ freshState()
   const offline = await runOnce('offline')
   ok('重启后断网仍能恢复上一轮的完整目录', offline.length === first.length && offline.length > INSTALLED.length,
     `在线 ${first.length} → 离线重启 ${offline.length}`)
-  ok('离线时用上的是缓存，不是只剩 fallback',
+  ok('离线时用上的是缓存，不是只剩已安装目录',
     offline.includes('deepseek-v4.1-flash') && offline.length > INSTALLED.length,
-    `${offline.length} 个（含 fallback）`)
+    `${offline.length} 个（含缓存恢复的描述符）`)
 
   // A tampered cache must not survive the same validation a live response gets.
   try {
@@ -1071,7 +1111,7 @@ freshState()
     `被过滤 ${filtered.length} 个（期望 ${unrecoverable.length}）`)
   ok('pi.dev 覆盖的 installed 模型仍在（由 overlay 保留）',
     INSTALLED_IDS.filter(i => devIds.has(i)).every(i => after.includes(i)))
-  ok('overlay 里的 fallback 模型不受 roster 影响（掉线≠下架）',
+  ok('Pi 提供的模型不受 roster 影响（网关缺口≠下架，跟随 Pi 更新）',
     after.includes('space-bunny-free') && after.includes('deepseek-v4.1-flash'))
   ok('目录真的变了才 emit adapters-updated', logs.filter(([l]) => l === 'emit').length > 0,
     `emit ${logs.filter(([l]) => l === 'emit').length} 次`)
@@ -1186,7 +1226,79 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
-// ── 7.6 安全边界：远端不能决定请求去向与 headers ────────────────────────────
+// ── 7.55 roster 的信封：换一种包法也必须读得出来 ─────────────────────────────
+{
+  const mainFetch = globalThis.fetch
+  /**
+   * A cold provider of its own, so one envelope cannot leave its wrapper or its
+   * roster behind for the next case.
+   * @param {string} label - unique module query for a fresh plugin instance.
+   * @param {any} body - what the gateway answers with.
+   * @returns {Promise<{ ids: string[], warns: string[] }>} the catalog and the warnings.
+   */
+  const rosterAs = async (label, body) => {
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      return new Response(JSON.stringify(body), { status: 200 })
+    }
+    const base = {
+      id: 'opencode-go',
+      getModels: () => INSTALLED.slice(),
+      stream: () => { throw new Error('not used') },
+      streamSimple: () => { throw new Error('not used') },
+    }
+    const coll = {
+      getProvider: (id) => (id === 'opencode-go' ? base : undefined),
+      setProvider: (p) => { Object.assign(base, p) },
+      getModels: (id) => (id === 'opencode-go' ? base.getModels() : []),
+    }
+    const warns = []
+    const debugs = []
+    freshState()
+    const mod = await import(`./lib/index.js?envelope-${label}`)
+    await mount(mod, {
+      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      logger: { info: () => {}, warn: (m) => warns.push(m), debug: (m) => debugs.push(m) },
+      emit: () => {}, effect: () => {}, on: () => {},
+    })
+    return { ids: base.getModels().map(m => m.id), warns, debugs }
+  }
+
+  // The roster arrived as `{ object, data }` until now, and the parser that read
+  // it knew only that shape plus a bare array. A gateway that re-enveloped itself
+  // would have produced an empty roster, which reads as "OCG serves nothing" and
+  // deletes models from the picker. One parser serves both feeds now, so the
+  // roster tolerates the shapes Pi's catalog already tolerated.
+  //
+  // Asserted on the roster being *accepted*, not on the catalog size: a refused
+  // roster leaves `liveModelIds` null, which filters nothing, and every installed
+  // model here is one the gateway serves — so a misread envelope and a correct
+  // one produce the same 33 ids. The catalog cannot tell them apart; the log can.
+  for (const [label, body] of [
+    ['models 分组 map', { models: Object.fromEntries(OCG_LIVE.map(m => [m.id, m])) }],
+    ['models 数组', { object: 'list', models: OCG_LIVE }],
+    ['单层 id map', Object.fromEntries(OCG_LIVE.map(m => [m.id, m]))],
+    ['裸数组', OCG_LIVE],
+  ]) {
+    const { warns, debugs } = await rosterAs(label, body)
+    const accepted = debugs.find(d => d.includes('currently exposes'))
+    ok(`roster 包成「${label}」时被读出并采纳`, accepted !== undefined && !warns.some(w => w.includes('empty roster')),
+      accepted?.slice(0, 70) ?? `被拒：${warns.find(w => w.includes('roster'))?.slice(0, 60) ?? '未知原因'}`)
+  }
+
+  // The tolerance must not become a way to *invent* a roster: rows with no string
+  // `id` are not a roster however they are wrapped, and have to arrive as the
+  // refusal they are rather than as a plausible-looking subset.
+  const bogus = await rosterAs('无法识别', { error: { message: 'nope' } })
+  ok('无法识别的 roster 信封被拒，而不是被读成空名单',
+    bogus.warns.some(w => w.includes('empty roster')),
+    bogus.warns.find(w => w.includes('empty roster'))?.slice(0, 70) ?? `目录 ${bogus.ids.length} 个，无 empty roster 告警`)
+
+  globalThis.fetch = mainFetch
+}
+
+
 {
   const mainFetch = globalThis.fetch
   // The real catalog travels with the hostile entries: a 3-entry response would
@@ -1369,8 +1481,9 @@ freshState()
   ok('首次启动即 pi.dev 不可达：退回 installed 原序（无主序时不臆造顺序）',
     order2.slice(0, installedOrder.length).join() === installedOrder.join(),
     order2.slice(0, 5).join(', '))
-  ok('首次启动即降级时两个 fallback 模型仍可路由',
-    order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'))
+  ok('首次启动即降级时目录就是已安装目录（没有内置兜底可补）',
+    !order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'),
+    `${order2.length} 个`)
 }
 
 // ── 8.6 目录缩水熔断 + 首次启动下限 + 并行取数 ─────────────────────────────
@@ -2108,7 +2221,8 @@ freshState()
     const secondCount = hits
     // Without a per-generation guard this would be handed the first mount's
     // in-flight refresh, whose result is then dropped by the generation check —
-    // leaving the new mount with nothing and the picker on installed + fallback.
+    // leaving the new mount with nothing and the picker on the installed catalog
+    // alone.
     mod.apply(quiet())
     await wait(); await wait(); await wait()
     const hitsAfterSecond = hits

@@ -2,11 +2,10 @@
 # package name, resolved through the profile's node_modules by
 # `dsh plugin --profile <name> add dsh-opencode-live-models`.
 #
-# The plugin imports nothing: it reaches the running pi-ai instance through
-# `ctx.llm.adapters`, the same private path dsh-opencode-session uses. That
-# matters because a profile's node_modules cannot see the dsh packages that
-# live inside app.asar, so any `import '@deepseek-ai/dsh-*'` would fail to
-# resolve in the installed desktop client.
+# The plugin reaches the running pi-ai instance through `ctx.llm.adapters`, the
+# same private path dsh-opencode-session uses, and imports nothing: the host can
+# resolve `@deepseek-ai/*` for a profile plugin, but this module must also load in
+# a bare Node process for its test suite, where it cannot. See the module header.
 - insert:
     - id: opencode-live-models
       name: dsh-opencode-live-models

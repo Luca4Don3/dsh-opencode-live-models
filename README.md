@@ -24,11 +24,17 @@ Requires DSH 0.1.5-rc.1 or newer, and **0.1.2 or newer of this plugin**.
 ## How it works
 
 - Loads model descriptors from [Pi's catalog](https://pi.dev/api/models/providers/opencode-go?types=chat).
-  The installed catalog remains available if the fetch fails.
-- Includes fallback descriptors for `deepseek-v4.1-flash` and `space-bunny-free`
-  when Pi's catalog is unavailable.
+  **Nothing is bundled**: the overlay is whatever Pi currently publishes, so an
+  id added, renamed or retired upstream needs no release here. The installed
+  catalog remains available if the fetch fails.
 - Checks the [OpenCode Go model list](https://opencode.ai/zen/go/v1/models) for
-  retired installed models and reports model IDs that lack descriptors.
+  retired **installed** models and reports model IDs that lack descriptors.
+
+Pi's own entries are exempt from that check. A model Pi still publishes while OCG
+has retired it stays in the picker until Pi drops it — following Pi's cadence is
+this plugin's contract, and treating a gateway gap as a retirement would retire
+exactly the ids Pi is ahead on. `space-bunny-free` is the live example: OCG no
+longer serves it, Pi still lists it, so it stays visible until Pi agrees.
 
 The plugin updates pi-ai's `opencode-go` model list. Requests continue through
 the installed pi-ai transport and authentication.
@@ -38,10 +44,12 @@ a response that is empty, malformed, or implausibly smaller than the last good
 one is refused rather than applied, so a bad fetch cannot quietly empty the
 picker.
 
-Mounting does not wait for them. The installed catalog plus the bundled
-fallbacks is already a correct catalog, so it is published the moment the plugin
-loads; the network refresh runs behind that and publishes again only if it
-changes something.
+Mounting does not wait for them. The installed catalog is already a correct
+catalog — the one you would have had without this plugin — so it is published
+the moment the plugin loads; the network refresh runs behind that and publishes
+again only if it changes something. On a first boot with no network at all, that
+floor plus the on-disk cache is everything the plugin has to offer, which is the
+deliberate cost of bundling nothing.
 
 The accepted catalog is also written to disk and read back on the next start,
 so an outage does not cost you the models only Pi carries. It goes to the
@@ -76,6 +84,10 @@ the live endpoints — no network or setup needed after a fresh clone.
 ## Limitations
 
 - Models without descriptors do not appear in the picker.
+- The two endpoints, the five-minute poll interval and the cache age are fixed in
+  the source. The gateway base URLs are fixed **on purpose** — a remote catalog
+  decides which models exist, never where a request goes — so pointing this at a
+  different gateway means editing `lib/index.js`.
 - The plugin uses `llm-pi-ai` internals. If a DSH update changes them, it logs a
   warning and leaves the installed catalog in place.
 
