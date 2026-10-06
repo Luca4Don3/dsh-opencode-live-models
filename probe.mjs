@@ -352,23 +352,25 @@ const ids = () => merged().map(m => m.id).sort()
     })
     const installedEntry = INSTALLED.find(m => m.id === 'deepseek-v4.1-flash')
     const served = coll.getModels('opencode-go').find(m => m.id === 'deepseek-v4.1-flash')
-    const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny-free')
+    const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny')
     ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（没有本地副本可覆盖它）',
       installedEntry?.inputLimits !== undefined && served?.inputLimits !== undefined,
       `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}`)
     ok('Pi 不可达时不会凭空补出模型（插件不再内置任何描述符）',
-      gapFilled === undefined && !INSTALLED_IDS.includes('space-bunny-free'),
-      `space-bunny-free 出现在目录里=${gapFilled !== undefined}`)
+      gapFilled === undefined && !INSTALLED_IDS.includes('space-bunny'),
+      `space-bunny 出现在目录里=${gapFilled !== undefined}`)
     globalThis.fetch = mainFetch
   }
 }
 
-// ── 1. 核心目标：两个关键模型出现 ────────────────────────────────────────────
+// ── 1. 两个代表性模型进入目录 ────────────────────────────────────────────────
+// deepseek-v4.1-flash 已安装目录里有（floor 覆盖它），space-bunny 只有 Pi 有
+// （floor 覆盖不到，必须靠叠加层补上）。这两个正好是合并逻辑的两条分支。
 ok('provider 被包装', patched >= 1, `setProvider 调用 ${patched} 次`)
 ok('DeepSeek V4.1 Flash 进入目录', ids().includes('deepseek-v4.1-flash'))
-ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
+ok('Space Bunny 进入目录', ids().includes('space-bunny'))
 {
-  const m = merged().find(x => x.id === 'space-bunny-free')
+  const m = merged().find(x => x.id === 'space-bunny')
   ok('Space Bunny descriptor 完整（协议/端点/容量/modalities）',
     m?.api === 'openai-completions' && m?.baseUrl === 'https://opencode.ai/zen/go/v1'
       && m?.contextWindow === 1048576 && m?.maxTokens === 524288
@@ -460,17 +462,22 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   const named = (reported?.match(/NOT added: (.+?)\. Add them/s)?.[1] ?? '')
     .split(', ').map(x => x.trim()).filter(Boolean)
   // 「无 descriptor」= live - effective，即网关在服务、但两个来源都给不出描述符的模型。
-  // 这必须是 9 个：另 5 个（glm-5.1、kimi-k2.6、omen-alpha、qwen3.6-plus、qwen3.7-max）
+  // 这必须是 10 个：另 4 个（kimi-k2.6、glm-5.1、qwen3.6-plus、qwen3.7-max）
   // 已安装目录里就有，属于**可用**模型，被点名就是漂移报告在说谎。
+  //
+  // 这里原来还排除了 deepseek-v4.1-flash 和 space-bunny-free，因为内置兜底给过它们
+  // 描述符。兜底已删，而这两个 id 现在都由 Pi 的目录覆盖，所以排除项已经变成死代码
+  // ——留着只会让人以为它们仍需要特殊处理。集合相等由下面两条断言保证，不需要排除。
   const trulyUnknown = LIVE_IDS.filter(i =>
-    !PI_DEV.some(m => m.id === i) && !INSTALLED_IDS.includes(i)
-    && i !== 'deepseek-v4.1-flash' && i !== 'space-bunny-free')
+    !PI_DEV.some(m => m.id === i) && !INSTALLED_IDS.includes(i))
   const onlyInstalled = INSTALLED_IDS.filter(i => !PI_DEV.some(m => m.id === i))
-  ok('告警逐个点名了每个无 descriptor 的模型，且不误报已安装目录已有的模型',
+  ok('告警逐个点名了每个无 descriptor 的模型，且不误报任何有描述符的模型',
     named.length === trulyUnknown.length
       && trulyUnknown.every(i => named.includes(i))
       && !onlyInstalled.some(i => named.includes(i))
-      && !named.includes('space-bunny-free')
+      // 下面三个是「两个来源都有」的模型：onlyInstalled 只覆盖 installed-only，
+      // 所以这一类要单独点名，否则 Pi 与已安装目录同时收录的模型被点名不会被发现。
+      && !named.includes('space-bunny')
       && !named.includes('mimo-v2.5')
       && !named.includes('deepseek-v4.1-flash'),
     `点名 ${named.length} 个 = 完全未知 ${trulyUnknown.length} 个；误报 ${named.filter(i => onlyInstalled.includes(i)).join(',') || '无'}`)
@@ -487,7 +494,7 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
   // Both ids below are in it, which is the point: they survive on the strength of
   // Pi's catalog, not of a copy bundled in this file.
   ok('pi.dev 不可达时退回 last-known-good 目录',
-    ids().includes('deepseek-v4.1-flash') && ids().includes('space-bunny-free'))
+    ids().includes('deepseek-v4.1-flash') && ids().includes('space-bunny'))
   ok('pi.dev 失败有告警且不静默',
     logs.some(([l, m]) => l === 'warn' && m.includes('pi.dev catalog refresh failed')))
   ok('pi.dev 失败时原有目录未丢', INSTALLED_IDS.every(i => ids().includes(i)))
@@ -531,10 +538,10 @@ ok('Space Bunny Free 进入目录', ids().includes('space-bunny-free'))
     const u = String(url)
     if (u.startsWith('https://pi.dev/')) {
       const rows = JSON.parse(JSON.stringify(PI_DEV))
-      const target = rows.find(m => m.id === 'space-bunny-free')
+      const target = rows.find(m => m.id === 'space-bunny')
       if (reprice) {
         target.cost = { ...target.cost, input: 0.5, output: 1.5 }
-        target.name = 'Space Bunny Free (repriced)'
+        target.name = 'Space Bunny (repriced)'
       }
       if (addOutput) {
         // A field this plugin has never heard of, on a model it does know: it is
@@ -726,7 +733,7 @@ freshState()
     emittedNow >= 1 && immediate.length === INSTALLED.length,
     `网络未返回时已发布 ${immediate.length} 个（= 已安装目录 ${INSTALLED.length}），emit ${emittedNow} 次`)
   ok('此时目录就是已安装目录，缺少远端模型属正常',
-    !immediate.includes('space-bunny-free') && immediate.length < settled.length,
+    !immediate.includes('space-bunny') && immediate.length < settled.length,
     `挂载时 ${immediate.length} → 刷新后 ${settled.length}`)
   ok('网络返回后目录补全并再次发布', settled.length > immediate.length && events.length > emittedNow,
     `${settled.length} 个，emit 共 ${events.length} 次`)
@@ -1112,7 +1119,7 @@ freshState()
   ok('pi.dev 覆盖的 installed 模型仍在（由 overlay 保留）',
     INSTALLED_IDS.filter(i => devIds.has(i)).every(i => after.includes(i)))
   ok('Pi 提供的模型不受 roster 影响（网关缺口≠下架，跟随 Pi 更新）',
-    after.includes('space-bunny-free') && after.includes('deepseek-v4.1-flash'))
+    after.includes('space-bunny') && after.includes('deepseek-v4.1-flash'))
   ok('目录真的变了才 emit adapters-updated', logs.filter(([l]) => l === 'emit').length > 0,
     `emit ${logs.filter(([l]) => l === 'emit').length} 次`)
   ok('变化以 added/removed 形式记录', logs.some(([l, m]) => l === 'info' && m.includes('catalog updated:')),
@@ -1482,7 +1489,7 @@ freshState()
     order2.slice(0, installedOrder.length).join() === installedOrder.join(),
     order2.slice(0, 5).join(', '))
   ok('首次启动即降级时目录就是已安装目录（没有内置兜底可补）',
-    !order2.includes('space-bunny-free') && order2.includes('deepseek-v4.1-flash'),
+    !order2.includes('space-bunny') && order2.includes('deepseek-v4.1-flash'),
     `${order2.length} 个`)
 }
 
