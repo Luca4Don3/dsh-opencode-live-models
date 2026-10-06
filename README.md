@@ -13,7 +13,13 @@ Add it from the DSH plugin page, or run:
 dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 ```
 
-Requires DSH 0.1.5-rc.1 or newer, and **0.1.2 or newer of this plugin**.
+Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
+
+> **0.3.0 drops the bundled model descriptors.** A model that the installed
+> catalog does not carry is now offered only while Pi's catalog is reachable, so
+> a first boot with no network has fewer models than 0.2.1 did. That is the price
+> of not publishing a snapshot that goes stale silently — see
+> [How it works](#how-it-works).
 
 > **0.1.1 is kept for the record — do not install it.** Two defects are fixed in
 > 0.1.2: a roster that arrives before the adapter registers can pass the size
