@@ -86,6 +86,39 @@ npm test
 Runs `probe.mjs` against fixtures committed in `test/fixtures/`, captured from
 the live endpoints — no network or setup needed after a fresh clone.
 
+## Probe
+
+Two of the three fixtures are the endpoints' own response bodies, verbatim:
+
+```sh
+curl -sS https://opencode.ai/zen/go/v1/models \
+  -o test/fixtures/ocg-models.json
+curl -sS 'https://pi.dev/api/models/providers/opencode-go?types=chat' \
+  -o test/fixtures/pi-dev-opencode-go.json
+```
+
+The third is the catalog the installed pi-ai ships, which lives inside the
+desktop client rather than on disk:
+`app.asar` → `node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json`.
+`docs/catalog-injection.md` has a working reader for that archive. Record the
+pi-ai version it came from in **both** the filename (`opencode-go-<version>.json`)
+and `CATALOG_SOURCE` in `probe.mjs` — the assertions that cite it are statements
+about a catalog that exists only inside one release, and a fixture that silently
+stops matching the client is how this suite once passed against something nobody
+was shipping.
+
+Then run the suite. Most counts are derived from the fixtures rather than written
+down, so a genuine upstream change should leave it green. What must not change
+silently is the set of models the drift report names — if that differs, the
+answer to "which live models have no descriptor" moved with it, so read
+`docs/protocol-probing.md` before editing any assertion that names a model.
+
+To try fixtures without committing them:
+
+```sh
+OCG_FIXTURES=/path/to/fixtures npm test
+```
+
 ## Limitations
 
 - Models without descriptors do not appear in the picker.

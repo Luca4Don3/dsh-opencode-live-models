@@ -43,7 +43,35 @@ Pi 自己的条目豁免这项检查：Pi 仍在发布、而 OCG 已经下线的
 npm test
 ```
 
-用 `test/fixtures/` 中随仓库提交的固件运行 `probe.mjs`——固件抓取自真实端点，新克隆后无需联网或任何准备。
+用 `test/fixtures/` 中随仓库提交的固件运行 `probe.mjs`——固件抓自真实端点，新克隆后无需联网或任何准备。
+
+## 刷新固件
+
+三个固件里有两个就是端点自己的响应体，原样保存：
+
+```sh
+curl -sS https://opencode.ai/zen/go/v1/models \
+  -o test/fixtures/ocg-models.json
+curl -sS 'https://pi.dev/api/models/providers/opencode-go?types=chat' \
+  -o test/fixtures/pi-dev-opencode-go.json
+```
+
+第三个是已安装 pi-ai 自带的目录，它在客户端内部而不在磁盘上：
+`app.asar` → `node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json`。
+读这个归档的方法见 `docs/catalog-injection.md`。取出来之后要在**两处**记下它来自哪个
+pi-ai 版本——文件名（`opencode-go-<版本>.json`）和 `probe.mjs` 里的 `CATALOG_SOURCE`。
+引用它的那些断言是在描述一份只存在于某个版本里的目录；固件悄悄地和客户端对不上，
+这个套件就曾经对着没人会发布的东西全绿过。
+
+然后跑一遍套件。规模大多由固件推导而不是写死在断言里，所以上游真的变了应该仍然是绿的。
+**不能悄悄变的是漂移报告点名的模型集合**——如果它变了，「哪些实时模型没有 descriptor」
+这个答案也跟着变了，改任何点名模型的断言之前先读 `docs/protocol-probing.md`。
+
+想试固件而不提交：
+
+```sh
+OCG_FIXTURES=/path/to/fixtures npm test
+```
 
 ## 限制
 
