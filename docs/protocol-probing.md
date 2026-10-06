@@ -152,7 +152,7 @@ descriptor，就是在编造。`zai`、`alibaba-token-plan`、`deepseek` 的协�
 
 0.2.1 及更早版本里，`FALLBACK_MODELS` 可以把某个模型连同它的 `api` 写死在插件里，
 人工补上这个缺口。它已被删除，理由记在 `lib/index.js` 的 `buildOverlay` 上：手写描述符
-是一份快照，它只会静静过期而不会报错——`space-bunny-free` 就是现成的例子，OCG 已经
+是一份快照，内容过期了也不会有人知道——`space-bunny-free` 就是现成的例子，OCG 已经
 不再提供它，而一份内置副本会继续把这个 id 挂进选择器，让它每一次派发都返回
 `ModelError`，而插件里没有任何东西会发现这件事。
 
