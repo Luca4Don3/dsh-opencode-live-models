@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # The workflow pins major tags, so a stale pin is invisible until something
+  # breaks. v4 of checkout and setup-node had reached three majors behind before
+  # anyone looked.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
