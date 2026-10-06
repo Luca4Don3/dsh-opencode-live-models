@@ -6,16 +6,19 @@
 结论先说：**协议探测走不通，而查表这条路也救不了真正缺 descriptor 的那批模型。**
 两者卡在同一个地方——没有任何来源会告诉你 OCG 上某个模型该用哪个 `api`。
 
-## 真正缺 descriptor 的是 9 个，不是 14 个
+## 真正缺 descriptor 的是 10 个，不是 14 个
 
-"不在 pi.dev" 的 14 个里，有 5 个（`kimi-k2.6`、`glm-5.1`、`qwen3.7-max`、
-`qwen3.6-plus`、`omen-alpha`）在 installed pi-ai 里**本来就有 descriptor**，当前即可使用。
-真正没有 descriptor 的是 9 个：
+"不在 pi.dev" 的 14 个里，有 4 个（`kimi-k2.6`、`glm-5.1`、`qwen3.7-max`、
+`qwen3.6-plus`）在 installed pi-ai 里**本来就有 descriptor**，当前即可使用。
+真正没有 descriptor 的是 10 个：
 
 ```
-minimax-m2.5  kimi-k2.5  glm-5  deepseek-flash  qwen3.5-plus
-mimo-v2-pro   mimo-v2-omni  hy3-preview  grok-4.5
+minimax-m2.5  kimi-k2.5   glm-5        deepseek-flash  qwen3.5-plus
+mimo-v2-pro   mimo-v2-omni hy3-preview  grok-4.5        omen-alpha
 ```
+
+`omen-alpha` 曾经算在"已安装目录自带"那一类里，那是 pi-ai 0.85.1 的情况；0.87.1
+的已安装目录里没有它，所以它现在真的缺 descriptor。4 + 10 = 14。
 
 ## 需要推断的东西
 
@@ -119,7 +122,7 @@ modalities / limit / cost …`，`attachment` 是"是否支持附件"的布尔�
 404 或协议错误。
 
 更要紧的是覆盖度。`opencode-go` 收录 33 个模型，与网关当前 43 个的交集是 33，
-对那 9 个待救模型**只命中 1 个**（`grok-4.5`）——它和 pi.dev 一样滞后。
+对那 10 个待救模型**只命中 1 个**（`grok-4.5`）——它和 pi.dev 一样滞后。
 
 至于其他 provider 下的同名模型，**不能代表 OCG**。同一模型在不同 provider 下的
 容量声明并不一致：
@@ -146,7 +149,7 @@ descriptor，就是在编造。`zai`、`alibaba-token-plan`、`deepseek` 的协�
 - **协议探测** 能排除端点，不能确认端点。
 - **查表** 能给容量和价格，不给协议。
 
-所以这 9 个模型**目前无法自动上架**，插件继续报告它们是正确的行为，不是缺陷。
+所以这 10 个模型**目前无法自动上架**，插件继续报告它们是正确的行为，不是缺陷。
 
 ## 人工覆盖入口已经取消
 
