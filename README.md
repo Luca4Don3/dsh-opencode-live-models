@@ -38,8 +38,7 @@ Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
 Pi's own entries are exempt from that check. A model Pi still publishes while OCG
 has retired it stays in the picker until Pi drops it — following Pi's cadence is
 this plugin's contract, and treating a gateway gap as a retirement would retire
-exactly the ids Pi is ahead on. `space-bunny-free` is the live example: OCG no
-longer serves it, Pi still lists it, so it stays visible until Pi agrees.
+exactly the ids Pi is ahead on.
 
 The plugin updates pi-ai's `opencode-go` model list. Requests continue through
 the installed pi-ai transport and authentication.

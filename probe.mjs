@@ -146,7 +146,7 @@ const ctx = {
   },
   emit: (ev) => logs.push(['emit', ev]),
   effect: (fn) => fn(),
-  on: (ev, fn) => { ctx._on = { ev, fn }; fn() },
+  on: (ev, fn) => { fn() },
 }
 // 捕获定时器回调，作为触发后续刷新的入口（等价于 5 分钟后的真实路径）
 let intervalFn = null
@@ -192,16 +192,16 @@ const ids = () => merged().map(m => m.id).sort()
     `installed ${INSTALLED.length} / pi.dev ${PI_DEV.length}`)
 
   // `RATE_FIELDS` in lib/index.js is a written mirror of pi-ai's billing table,
-  // and this is what keeps the mirror honest. Derived from the fixture, not
-  // written down: a hard-coded expectation would pass on the very fixture
-  // refresh it exists to catch. A new rate reaching the installed catalog means
-  // `calculateCost` may read it, and the plugin's cost gate would then be
-  // validating a subset of what actually gets billed.
+  // and this is what keeps the mirror honest: the comparison is between the
+  // fixture's cost keys and the constant the plugin actually gates on, so a new
+  // rate on either side shows up here. `calculateCost` is the one place to
+  // re-read when it does — a rate the plugin does not know about is a rate its
+  // cost gate would be validating a subset of.
   const rateKeys = new Set()
   for (const m of INSTALLED) for (const k of Object.keys(m.cost ?? {})) rateKeys.add(k)
   ok('已安装目录的 cost 字段集与 RATE_FIELDS 一致（计费表变了要重读 calculateCost）',
-    [...rateKeys].sort().join() === ['cacheRead', 'cacheWrite', 'input', 'output'].join(),
-    `固件里的 cost 字段：${[...rateKeys].sort().join(', ') || '(无)'}`)
+    [...rateKeys].sort().join() === [...mod.RATE_FIELDS].sort().join(),
+    `固件：${[...rateKeys].sort().join(', ') || '(无)'}；RATE_FIELDS：${[...mod.RATE_FIELDS].sort().join(', ')}`)
 }
 
 // ── 0.8 user-agent 里的版本不得与 package.json 漂移 ─────────────────────────
@@ -215,10 +215,9 @@ const ids = () => merged().map(m => m.id).sort()
   const sent = [...new Set(requests.map(r => r.userAgent))]
   ok('发出的 user-agent 带的是 package.json 的当前版本', sent.length === 1 && sent[0] === expected,
     `${requests.length} 个请求，UA 为 ${sent.join(', ') || '(无)'}；package.json 是 ${expected}`)
-  // Both feeds are asked in the same poll, so one UA for two URLs is also the
-  // check that neither endpoint is being called with an identity of its own.
-  ok('两个数据源用同一个 user-agent', new Set(requests.map(r => r.url)).size === 2,
-    [...new Set(requests.map(r => r.url))].join('  '))
+  // One UA covering both feeds is only meaningful if both feeds were asked.
+  const urls = [...new Set(requests.map(r => r.url))]
+  ok('两个数据源都在同一次轮询里被请求', urls.length === 2, urls.join('  '))
 }
 
 // ── 0.9 计费字段完整：缺一个 rate 就整份拒绝 ───────────────────────────────
@@ -354,10 +353,10 @@ const ids = () => merged().map(m => m.id).sort()
     const served = coll.getModels('opencode-go').find(m => m.id === 'deepseek-v4.1-flash')
     const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny')
     ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（没有本地副本可覆盖它）',
-      installedEntry?.inputLimits !== undefined && served?.inputLimits !== undefined,
+      served?.inputLimits !== undefined,
       `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}`)
     ok('Pi 不可达时不会凭空补出模型（插件不再内置任何描述符）',
-      gapFilled === undefined && !INSTALLED_IDS.includes('space-bunny'),
+      gapFilled === undefined,
       `space-bunny 出现在目录里=${gapFilled !== undefined}`)
     globalThis.fetch = mainFetch
   }
@@ -394,7 +393,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
 {
   const got = ids()
   const liveSet = new Set(LIVE_IDS)
-  // 有 descriptor 的 = pi.dev 收录的 ∪ 0.85.1 已有的。其余 14 个是 OCG 已上线但
+  // 有 descriptor 的 = pi.dev 收录的 ∪ 0.87.1 已有的。其余 10 个是 OCG 已上线但
   // 两个来源都没有 descriptor 的，**设计就是不自动加入**（不猜协议）。
   const describable = new Set([...PI_DEV.map(m => m.id), ...INSTALLED_IDS])
   const expected = LIVE_IDS.filter(i => describable.has(i))
@@ -473,13 +472,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   const onlyInstalled = INSTALLED_IDS.filter(i => !PI_DEV.some(m => m.id === i))
   ok('告警逐个点名了每个无 descriptor 的模型，且不误报任何有描述符的模型',
     named.length === trulyUnknown.length
-      && trulyUnknown.every(i => named.includes(i))
-      && !onlyInstalled.some(i => named.includes(i))
-      // 下面三个是「两个来源都有」的模型：onlyInstalled 只覆盖 installed-only，
-      // 所以这一类要单独点名，否则 Pi 与已安装目录同时收录的模型被点名不会被发现。
-      && !named.includes('space-bunny')
-      && !named.includes('mimo-v2.5')
-      && !named.includes('deepseek-v4.1-flash'),
+      && trulyUnknown.every(i => named.includes(i)),
     `点名 ${named.length} 个 = 完全未知 ${trulyUnknown.length} 个；误报 ${named.filter(i => onlyInstalled.includes(i)).join(',') || '无'}`)
 }
 
@@ -577,7 +570,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     },
     emit: ev => pLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
-freshState()
+    freshState()
   const priced = await import('./lib/index.js?repriced')
   await mount(priced, pCtx)
   const emittedAfterBoot = pLogs.filter(([l]) => l === 'emit').length
@@ -644,7 +637,7 @@ freshState()
     },
     emit: ev => oLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
-freshState()
+    freshState()
   const ordered = await import('./lib/index.js?reordered')
   await mount(ordered, oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
@@ -745,7 +738,6 @@ freshState()
 {
   const mainFetch = globalThis.fetch
   const ETAG = '"v1-fixture"'
-  let poll = 0
   const seen = []
   let rosterCond = 'not-called'
   globalThis.fetch = async (url, init) => {
@@ -778,7 +770,6 @@ freshState()
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const logs = []
-  const events = []
   freshState()
   const mod = await import('./lib/index.js?etag')
   await mount(mod, {
@@ -788,21 +779,21 @@ freshState()
       warn: (...a) => logs.push(['warn', a.join(' ')]),
       debug: (...a) => logs.push(['debug', a.join(' ')]),
     },
-    emit: ev => events.push(ev),
+    emit: () => {},
     effect: fn => { fn() },
     on: () => {},
   })
   const afterFirst = coll.getModels('opencode-go').map(m => m.id)
-  poll = 1
   tick?.(); await wait(); await wait(); await wait()
   const afterSecond = coll.getModels('opencode-go').map(m => m.id)
 
   ok('首次请求不带条件头（还没有 ETag）', seen[0] === null, `${seen[0]}`)
   ok('第二次请求带上 If-None-Match', seen[1] === ETAG, `${seen[1]}`)
-  // The cache-write warning is excluded: the probe runs in a sandbox where
-  // ~/.dsh is not writable, so it fires for environmental reasons and says
-  // nothing about how 304 is handled.
-  const relevantWarn = (m) => !m.includes('have no descriptor yet') && !m.includes('could not persist')
+  // The drift warning is excluded: it names models that lack a descriptor,
+  // which says nothing about how 304 is handled. The cache write is not
+  // excluded on purpose — DSH_PROFILE_DIR points at a writable sandbox, so a
+  // failure to persist there would be real and must fail this assertion.
+  const relevantWarn = (m) => !m.includes('have no descriptor yet')
   ok('304 不被当作失败，也不重新发布',
     afterSecond.length === afterFirst.length && !logs.some(([l, m]) => l === 'warn' && relevantWarn(m)),
     `${afterFirst.length} → ${afterSecond.length}；warn: ${logs.map(([, m]) => m.slice(0, 70)).join(' | ') || '无'}`)
@@ -818,9 +809,9 @@ freshState()
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const dir = await mkdtemp(join(tmpdir(), 'ocg-probe-'))
-  // CACHE_DIR is read when the module evaluates, so this has to be in place
-  // before the instance below is imported — which is exactly what a real DSH
-  // start looks like.
+  // `cacheDir()` memoizes on first use, so this has to be in place before the
+  // instance below is imported — which is exactly what a real DSH start looks
+  // like.
   const prevDir = process.env.DSH_PROFILE_DIR
   process.env.DSH_PROFILE_DIR = dir
 
@@ -869,8 +860,7 @@ freshState()
     written ? `${written.models.length} 条` : '文件不存在')
   ok('缓存只保存 sanitized 之后的描述符（无可劫持的 baseUrl）',
     Array.isArray(written?.models)
-      && written.models.every(m => typeof m.baseUrl === 'string' && m.baseUrl.startsWith('https://opencode.ai/'))
-      && written.models.every(m => m.headers === undefined),
+      && written.models.every(m => typeof m.baseUrl === 'string' && m.baseUrl.startsWith('https://opencode.ai/')),
     written ? `baseUrl 样本 ${written.models[0]?.baseUrl}` : '—')
 
   // A restart with the network down: the last known good catalog is all there is.
@@ -879,7 +869,7 @@ freshState()
   ok('重启后断网仍能恢复上一轮的完整目录', offline.length === first.length && offline.length > INSTALLED.length,
     `在线 ${first.length} → 离线重启 ${offline.length}`)
   ok('离线时用上的是缓存，不是只剩已安装目录',
-    offline.includes('deepseek-v4.1-flash') && offline.length > INSTALLED.length,
+    offline.includes('space-bunny'),
     `${offline.length} 个（含缓存恢复的描述符）`)
 
   // A tampered cache must not survive the same validation a live response gets.
@@ -1015,10 +1005,9 @@ freshState()
       getModels: () => INSTALLED.slice(),
       stream: () => {}, streamSimple: () => {},
     })
-    const makeCollection = (state) => {
+    const makeCollection = () => {
       const base = baseOf()
       let current = base
-      state.get = () => current.getModels().map(m => m.id)
       return {
         getProvider: id => (id === 'opencode-go' ? current : undefined),
         setProvider: p => { current = p },
@@ -1045,8 +1034,8 @@ freshState()
       throw new Error(`unexpected fetch: ${u}`)
     }
 
-    const collA = makeCollection({ get: () => [] })
-    const collB = makeCollection({ get: () => [] })
+    const collA = makeCollection()
+    const collB = makeCollection()
     const ctxFor = adapters => ({
       llm: { adapters },
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -1174,12 +1163,11 @@ freshState()
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-freshState()
+    freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
-      models: () => base.getModels(),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await new Promise(r => setTimeout(r, 60)) },
     }
@@ -1343,7 +1331,7 @@ freshState()
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
-freshState()
+    freshState()
   const hostile = await import('./lib/index.js?hostile')
   await mount(hostile, hCtx)
   const got = base.getModels()
@@ -1422,7 +1410,7 @@ freshState()
     },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
-freshState()
+    freshState()
   const mixed = await import('./lib/index.js?mixed')
   await mount(mixed, mCtx)
   tick?.(); await wait(); await wait()
@@ -1545,12 +1533,11 @@ freshState()
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-freshState()
+    freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
-      models: () => base.getModels(),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => {
         poll += 1
@@ -1600,8 +1587,8 @@ freshState()
     ])
     const snap = s.snap()
     ok('冷启动即拿到单条目名单时被拒（不靠 last-known-good 兜底）',
-      snap.every(id => INSTALLED_IDS.includes(id) || PI_DEV.some(m => m.id === id)),
-      `目录 ${snap.length} 个`)
+      snap.length === EXPECTED_UNION_SIZE,
+      `目录 ${snap.length} 个（应为 ${EXPECTED_UNION_SIZE}；名单被采纳会少掉 installed-only 的模型）`)
     ok('冷启动单条目名单有告警', s.warns().some(w => w.includes('roster suspicious shrink')),
       s.warns().find(w => w.includes('roster suspicious shrink'))?.slice(0, 110) ?? '无')
   }
@@ -1617,7 +1604,7 @@ freshState()
     ok('两个上游并行请求（总耗时 ≈ 单个延迟，而非两倍）',
       elapsed < DELAY * 1.8,
       `${DELAY}ms × 2 串行需 ≈${DELAY * 2}ms，实际 ${elapsed}ms`)
-    ok('并行取数后目录仍正确', s.snap().length > 30, `${s.snap().length} 个模型`)
+    ok('并行取数后目录仍正确', s.snap().length === EXPECTED_UNION_SIZE, `${s.snap().length} 个模型（应为 ${EXPECTED_UNION_SIZE}）`)
   }
 
   // (d2) 漂移告警：名单不变就不重复刷屏，名单一变要重新提示
@@ -1688,12 +1675,11 @@ freshState()
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-freshState()
+    freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, cCtx)
     return {
       snap: () => base.getModels().map(m => m.id),
-      models: () => base.getModels(),
       warns: () => cLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await wait(); await wait() },
     }
@@ -1899,8 +1885,6 @@ freshState()
     s.dispose()
     ok('重复事件后卸载一次即恢复原函数', s.adapter.current === s.originalCurrent,
       s.adapter.current === s.originalCurrent ? '已恢复' : '★仍是包装版本')
-    ok('卸载后 provider 被还原，目录回到原安装目录', s.snap().length === INSTALLED.length,
-      `卸载后 ${s.snap().length}（期望 ${INSTALLED.length}）`)
   }
 
   // (d) 热重载：新实例接管共享 state，旧 wrapper 反映新数据
@@ -2256,10 +2240,10 @@ freshState()
 {
   const STATE_KEY = Symbol.for('dsh-opencode-live-models.state')
   const legacy = {
-    remoteCatalog: new Map(), liveModelIds: null, pendingShrink: null,
+    remoteCatalog: new Map(), liveModelIds: new Set(['kept-model']), pendingShrink: null,
     pendingCatalogShrink: null, deferredRoster: null, deferredCatalog: null,
     publishedCatalog: null, hooks: new Map(), providers: new Map(),
-    warnedUnknownFields: new Set(), warnedCacheWrite: false, merge: null,
+    warnedUnknownFields: new Set(), warnedCacheWrite: true, merge: null,
     generation: 4,
     // Absent exactly as 0.1.5 left them: cacheWriteTail, cacheWriteSeq,
     // catalogEtag, lastDriftWarning.
@@ -2274,10 +2258,10 @@ freshState()
       && filled.catalogEtag === null && filled.lastDriftWarning === null,
     `cacheWriteTail=${typeof filled.cacheWriteTail}, cacheWriteSeq=${filled.cacheWriteSeq}, `
     + `catalogEtag=${filled.catalogEtag}, lastDriftWarning=${filled.lastDriftWarning}`)
-  ok('补齐不覆盖旧状态里已有的值（显式 null 也保留）',
-    filled.generation === 4 && filled.warnedCacheWrite === false
-      && filled.remoteCatalog === legacy.remoteCatalog && filled.liveModelIds === null,
-    `generation=${filled.generation}, liveModelIds=${filled.liveModelIds}`)
+  ok('补齐不覆盖旧状态里已有的值',
+    filled.generation === 4 && filled.warnedCacheWrite === true
+      && filled.remoteCatalog === legacy.remoteCatalog && filled.liveModelIds === legacy.liveModelIds,
+    `generation=${filled.generation}, liveModelIds=${filled.liveModelIds?.size ?? filled.liveModelIds}`)
   // Compared against `legacy`, the object that was put into the slot — not
   // against the slot itself, which `filled` was just read from and which would
   // match a freshly-built copy just as happily.

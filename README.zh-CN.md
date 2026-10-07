@@ -23,7 +23,7 @@ dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 - 从 [Pi 模型目录](https://pi.dev/api/models/providers/opencode-go?types=chat) 读取模型描述符。**插件不内置任何模型**：叠加层就是 Pi 当前发布的内容，上游新增、改名或下线都不需要这里发一次版本。获取失败时保留已安装的目录。
 - 对照 [OpenCode Go 模型列表](https://opencode.ai/zen/go/v1/models) 检查**已安装目录**中下线的模型，并报告缺少描述符的模型 ID。
 
-Pi 自己的条目豁免这项检查：Pi 仍在发布、而 OCG 已经下线的模型会留在选择器里，直到 Pi 也移除它。跟随 Pi 的节奏是本插件的约定；把网关的缺口当成下线，退掉的恰恰是 Pi 领先的那批 id。`space-bunny-free` 就是现成的例子：OCG 已不再提供它，Pi 仍在发布，所以在 Pi 改口之前它一直可见。
+Pi 自己的条目豁免这项检查：Pi 仍在发布、而 OCG 已经下线的模型会留在选择器里，直到 Pi 也移除它。跟随 Pi 的节奏是本插件的约定；把网关的缺口当成下线，退掉的恰恰是 Pi 领先的那批 id。
 
 插件更新 pi-ai 中 `opencode-go` 的模型列表。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
 
