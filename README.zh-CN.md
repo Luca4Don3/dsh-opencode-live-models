@@ -6,11 +6,19 @@ DeepSeek Harness（DSH）自带的 pi-ai 模型目录可能跟不上 OpenCode Go
 
 ## 安装
 
-在 DSH 插件页面添加，或运行：
+**桌面端** —— 侧栏打开「插件」页面，点「添加插件」，粘贴下面的 spec，再点「立即启用」并重启 DSH：
+
+```
+github:Luca4Don3/dsh-opencode-live-models
+```
+
+**CLI** —— `add` 会同时安装并选中该组合包，重启 DSH 后生效：
 
 ```sh
 dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 ```
+
+`github:` spec 通过 HTTPS 从 codeload.github.com 拉取，npm 镜像不代理它，因此需要宿主机能访问 GitHub。
 
 需要 DSH 0.1.5-rc.1 或更新版本，以及**本插件 0.3.0 或更新版本**。
 

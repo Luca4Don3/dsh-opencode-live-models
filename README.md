@@ -7,11 +7,19 @@ OpenCode Go. This plugin updates it at runtime.
 
 ## Install
 
-Add it from the DSH plugin page, or run:
+**Desktop** — open **Plugins** in the sidebar, click **Add plugin**, paste the spec, then choose **Enable now** and restart DSH:
+
+```
+github:Luca4Don3/dsh-opencode-live-models
+```
+
+**CLI** — `add` both installs and selects the bundle; restart DSH to compose it:
 
 ```sh
 dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 ```
+
+The `github:` spec downloads over HTTPS from codeload.github.com; an npm mirror does not proxy it, so the host needs reachable GitHub access.
 
 Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
 
