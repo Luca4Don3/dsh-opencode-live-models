@@ -3,9 +3,9 @@
 English | [中文](README.zh-CN.md)
 
 DeepSeek Harness (DSH) ships with a pi-ai model catalog that can lag behind
-OpenCode Go. This plugin updates it at runtime, and keeps the gateway's two
-per-request requirements — a session header and a usable prompt-cache retention —
-in place for the models it manages.
+OpenCode Go and OpenCode Zen. This plugin updates both at runtime, and keeps the
+gateway's two per-request requirements — a session header and a usable
+prompt-cache retention — in place for the models it manages.
 
 ## Install
 
@@ -25,6 +25,12 @@ The `github:` spec downloads over HTTPS from codeload.github.com; an npm mirror 
 
 Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
 
+> **0.5.0 covers `opencode` (OpenCode Zen) as well as `opencode-go`.** The Zen
+> route used to keep whatever catalog the installed pi-ai shipped with; it is now
+> refreshed from its own Pi catalog and its own live roster, with its own protocol
+> table. Both routes stay independent: one gateway's outage or refused payload
+> never touches the other's catalog.
+
 > **0.3.0 drops the bundled model descriptors.** A model the installed catalog
 > does not carry is now offered only while Pi's catalog is reachable, so a first
 > boot with no network lists one model less than 0.2.1 did: `space-bunny-free`.
@@ -38,21 +44,37 @@ Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
 
 ## How it works
 
-- Loads model descriptors from [Pi's catalog](https://pi.dev/api/models/providers/opencode-go?types=chat).
-  **Nothing is bundled**: the overlay is whatever Pi currently publishes, so an
+- Loads model descriptors from Pi's catalog, one URL per route:
+  [`opencode-go`](https://pi.dev/api/models/providers/opencode-go?types=chat) and
+  [`opencode`](https://pi.dev/api/models/providers/opencode?types=chat).
+  **Nothing is bundled**: each overlay is whatever Pi currently publishes, so an
   id added, renamed or retired upstream needs no release here. The installed
   catalog remains available if the fetch fails.
-- Checks the [OpenCode Go model list](https://opencode.ai/zen/go/v1/models) for
-  retired **installed** models and reports model IDs that lack descriptors.
+- Checks each gateway's live list — [OpenCode
+  Go](https://opencode.ai/zen/go/v1/models) and [OpenCode
+  Zen](https://opencode.ai/zen/v1/models) — for retired **installed** models, and
+  reports model IDs that lack descriptors.
+- Refuses to publish entries that are catalog rows but not conversation models.
+  Pi lists OpenCode Zen's two `type: "classifier"` rows beside the chat models;
+  they carry no `maxTokens` and are named once and skipped rather than offered in
+  the picker.
 
 Pi's own entries are exempt from that check. A model Pi still publishes while OCG
 has retired it stays in the picker until Pi drops it — following Pi's cadence is
 this plugin's contract, and treating a gateway gap as a retirement would retire
 exactly the ids Pi is ahead on.
 
-The plugin updates pi-ai's `opencode-go` model list, and rewrites two things on
-the way to the wire. Requests continue through the installed pi-ai transport and
-authentication.
+The plugin updates pi-ai's `opencode-go` and `opencode` model lists, and rewrites
+two things on the way to the wire. Requests continue through the installed pi-ai
+transport and authentication.
+
+**Two routes, not two names for one.** They are different endpoints:
+`opencode-go` sends Anthropic, OpenAI-completions and OpenAI-responses traffic to
+`/zen/go`, while `opencode` is OpenCode Zen and carries a fourth protocol
+(Google's) to `/zen`, from a different Anthropic root. Each route has its own
+protocol table, its own catalog and its own cache entry, and only the routes DSH
+actually registered are polled — a route configured nowhere is not fetched every
+five minutes.
 
 **Session headers, on every opencode route.** OpenCode Go refuses a request that
 arrives without `x-opencode-session` (`400 MissingSessionID`) and asks a client to
@@ -95,22 +117,18 @@ again only if it changes something. On a first boot with no network at all, that
 floor plus the on-disk cache is everything the plugin has to offer, which is the
 deliberate cost of bundling nothing.
 
-The accepted catalog is also written to disk and read back on the next start,
-so an outage does not cost you the models only Pi carries. It goes to the
-profile directory when DSH exposes one, otherwise to `~/.dsh`. Cached entries
-are re-validated on the way in, a cache older than a week is ignored, and one
-that cannot be written or read is simply skipped. Pi serves an ETag, so an
-unchanged catalog costs a conditional request rather than a full body.
+Each route's accepted catalog is also written to disk and read back on the next start, so an outage does not cost you the models only Pi carries. Both catalogs share one file keyed by provider id — a single atomic rename keeps the two consistent — and each entry is age-checked on its own, so a route that stopped being refreshed is not kept alive by another that keeps succeeding. It goes to the profile directory when DSH exposes one, otherwise to ~/.dsh. Cached entries are re-validated on the way in, a cache entry older than a week is ignored, and one that cannot be written or read is simply skipped. Pi serves an ETag per route, so an unchanged catalog costs a conditional request rather than a full body.
 
 **Reading the log.** On a `304` the plugin keeps both the catalog and the ETag
 and does not rewrite the file, so the cache's mtime staying put is the expected
 result, not a failure. `catalog updated` marks a change in the *visible* catalog
 and nothing else — restoring the cache at start can produce it too, and its
 absence says nothing about whether the refresh worked. A first `catalog
-published` count is not a fixed number either.
+published` count is not a fixed number either. Each route logs its own label
+(`OpenCode Go` / `OpenCode Zen`), so a warning names the route it came from.
 
 What to check after a controlled restart: the overlay was installed, a `catalog
-published` appeared, and no `pi.dev catalog refresh failed` did — **but wait for
+published` appeared, and no `catalog refresh failed` did — **but wait for
 the first refresh to finish before looking for that warning.** The two requests
 run in parallel with an 8s timeout each, and the failure is only recorded once
 both settle, so the absence of a warning right after `catalog published` means
@@ -127,24 +145,27 @@ the live endpoints — no network or setup needed after a fresh clone.
 
 ## Probe
 
-Two of the three fixtures are the endpoints' own response bodies, verbatim:
+Both routes are captured from the live endpoints, verbatim:
 
 ```sh
-curl -sS https://opencode.ai/zen/go/v1/models \
-  -o test/fixtures/ocg-models.json
+curl -sS https://opencode.ai/zen/go/v1/models -o test/fixtures/ocg-models.json
+curl -sS https://opencode.ai/zen/v1/models -o test/fixtures/zen-models.json
 curl -sS 'https://pi.dev/api/models/providers/opencode-go?types=chat' \
   -o test/fixtures/pi-dev-opencode-go.json
+curl -sS 'https://pi.dev/api/models/providers/opencode?types=chat' \
+  -o test/fixtures/pi-dev-opencode.json
 ```
 
-The third is the catalog the installed pi-ai ships, which lives inside the
-desktop client rather than on disk:
-`app.asar` → `node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json`.
+The other two fixtures are the catalogs the installed pi-ai ships, which live
+inside the desktop client rather than on disk:
+`app.asar` → `node_modules/@earendil-works/pi-ai/dist/providers/data/opencode-go.json`
+and `.../data/opencode.json`.
 `docs/catalog-injection.md` has a working reader for that archive. Record the
-pi-ai version it came from in **both** the filename (`opencode-go-<version>.json`)
-and `CATALOG_SOURCE` in `probe.mjs` — the assertions that cite it are statements
-about a catalog that exists only inside one release, and a fixture that silently
-stops matching the client is how this suite once passed against something nobody
-was shipping.
+pi-ai version it came from in **both** the filename (`opencode-go-<version>.json`,
+`opencode-<version>.json`) and `CATALOG_SOURCE` in `probe.mjs` — the assertions
+that cite it are statements about a catalog that exists only inside one release,
+and a fixture that silently stops matching the client is how this suite once
+passed against something nobody was shipping.
 
 Then run the suite. Most counts are derived from the fixtures rather than written
 down, so a genuine upstream change should leave it green. What must not change
@@ -157,11 +178,10 @@ To try fixtures without committing them:
 ```sh
 OCG_FIXTURES=/path/to/fixtures npm test
 ```
-
 ## Limitations
 
 - Models without descriptors do not appear in the picker.
-- The two endpoints, the five-minute poll interval and the cache age are fixed in
+- The endpoints each route polls, the five-minute poll interval and the cache age are fixed in
   the source. The gateway base URLs are fixed **on purpose** — a remote catalog
   decides which models exist, never where a request goes — so pointing this at a
   different gateway means editing `lib/index.js`.
