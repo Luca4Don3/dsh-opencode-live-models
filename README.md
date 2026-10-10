@@ -48,8 +48,25 @@ has retired it stays in the picker until Pi drops it — following Pi's cadence 
 this plugin's contract, and treating a gateway gap as a retirement would retire
 exactly the ids Pi is ahead on.
 
-The plugin updates pi-ai's `opencode-go` model list. Requests continue through
-the installed pi-ai transport and authentication.
+The plugin updates pi-ai's `opencode-go` model list, and merges one request option
+on the way through: `cacheRetention: 'long'` for DeepSeek models. Requests
+continue through the installed pi-ai transport and authentication.
+
+**Why that one option.** `cacheRetention` is the only switch DSH exposes for the
+two wire fields that keep the gateway's prefix cache alive — `prompt_cache_key`
+and `prompt_cache_retention: "24h"`. pi-ai defaults it to `"short"`, which sends
+neither, so a turn is only ever served from the gateway's own roughly five-minute
+automatic window; a direct DeepSeek endpoint keeps its disk cache for hours to
+days. That is why the same session reports a lower cache-hit rate through
+`opencode-go` than against the official API. The setting is a *provider-level*
+pi-ai field with no per-model form, so left alone it would reach every model on
+the route; `/^deepseek/i` names the ones this plugin changes. `kimi-k2.6` is the
+single model upstream that already opts out through
+`compat.supportsLongCacheRetention`, and no model on the route declares
+`cacheControlFormat`, so the ids matching the pattern are exactly the ones whose
+behaviour changes. The overlay's `stream` / `streamSimple` forward to the original
+provider with that option merged in, leaving transport, auth and provider-level
+headers untouched.
 
 Both feeds are fetched in parallel and neither is trusted to shrink the catalog:
 a response that is empty, malformed, or implausibly smaller than the last good
@@ -133,6 +150,9 @@ OCG_FIXTURES=/path/to/fixtures npm test
   the source. The gateway base URLs are fixed **on purpose** — a remote catalog
   decides which models exist, never where a request goes — so pointing this at a
   different gateway means editing `lib/index.js`.
+- The long cache retention is hard-coded to model ids matching `/^deepseek/i` in
+  `lib/index.js`. Every other model on the route keeps pi-ai's default, and there
+  is no config flag — widen the pattern there if you want a different set.
 - The plugin uses `llm-pi-ai` internals. If a DSH update changes them, it logs a
   warning and leaves the installed catalog in place.
 
