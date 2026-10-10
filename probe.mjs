@@ -2344,6 +2344,133 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
+// ── 8.6 opencode 路由的会话头 ─────────────────────────────────────────────
+//
+// pi-ai's own injection is bound to its two provider descriptors, so a route the
+// harness built for a custom id — same gateway, different id — would reach the
+// gateway with no session header and be refused with `400 MissingSessionID`. The
+// wrapper therefore goes on the `Models` prototype, which is also the only layer
+// that survives a collection rebuild.
+{
+  const mainFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+
+  // A class rather than an object literal: the wrapper goes on the prototype, and
+  // a literal's prototype is `Object.prototype`, which the installer refuses.
+  class FakeModels {
+    constructor() { this.registered = new Map() }
+    getProvider(id) { return this.registered.get(id) }
+    setProvider(provider) { this.registered.set(provider.id, provider) }
+    getModels(id) { return this.registered.get(id)?.getModels() ?? [] }
+    providerFor(model) {
+      const provider = this.registered.get(model.provider)
+      if (provider === undefined) throw new Error(`unknown provider ${model.provider}`)
+      return provider
+    }
+    stream(model, context, options) { return this.providerFor(model).stream(model, context, options) }
+    streamSimple(model, context, options) { return this.providerFor(model).streamSimple(model, context, options) }
+  }
+  const echo = id => ({
+    id,
+    getModels: () => INSTALLED.slice(),
+    stream: (model, context, options) => options,
+    streamSimple: (model, context, options) => options,
+  })
+
+  const models = new FakeModels()
+  models.setProvider(echo('opencode-go'))
+  models.setProvider(echo('deepseek'))        // the official route: untouched
+  models.setProvider(echo('opencode-go-ds'))  // a custom id on the same gateway
+
+  const originalStream = FakeModels.prototype.stream
+  const originalStreamSimple = FakeModels.prototype.streamSimple
+  const disposers = []
+  globalThis.setInterval = () => ({ unref() {} })
+  freshState()
+  const mod = await import('./lib/index.js?session-headers')
+  await mount(mod, {
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models }) } }]]) },
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    emit: () => {}, on: () => {},
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+  })
+
+  const dispatch = (model, options) => models.streamSimple(model, {}, options)
+  const GC = { id: 'x', provider: 'opencode-go' }
+
+  const routed = dispatch(GC, { sessionId: 'sess-1' })
+  ok('opencode-go 路由带上会话头与客户端标识',
+    routed?.headers?.['x-opencode-session'] === 'sess-1'
+      && routed?.headers?.['x-opencode-client'] === 'dsh',
+    JSON.stringify(routed?.headers))
+
+  const custom = dispatch(
+    { id: 'x', provider: 'opencode-go-ds', baseUrl: 'https://opencode.ai/zen/go/v1' },
+    { sessionId: 'sess-1' },
+  )
+  ok('自定义 provider 键按 baseUrl 兜底（内置注入覆盖不到这条路由）',
+    custom?.headers?.['x-opencode-session'] === 'sess-1'
+      && custom?.headers?.['x-opencode-client'] === 'dsh',
+    JSON.stringify(custom?.headers))
+
+  const untouched = { sessionId: 'sess-1' }
+  ok('非 opencode 路由原样透传（同一个 options 对象）',
+    dispatch({ id: 'x', provider: 'deepseek', baseUrl: 'https://api.deepseek.com' }, untouched) === untouched)
+
+  const anonymous = dispatch(GC, {})
+  ok('没有会话 ID 时不注入会话头，但客户端标识仍然发',
+    anonymous?.headers?.['x-opencode-session'] === undefined
+      && anonymous?.headers?.['x-opencode-client'] === 'dsh',
+    JSON.stringify(anonymous?.headers))
+
+  const pinned = dispatch(GC, { sessionId: 'sess-1', headers: { 'X-Opencode-Session': 'mine' } })
+  ok('显式配置的会话头优先，且大小写不敏感',
+    pinned?.headers?.['X-Opencode-Session'] === 'mine'
+      && pinned?.headers?.['x-opencode-session'] === undefined,
+    JSON.stringify(pinned?.headers))
+
+  const modelPinned = dispatch(
+    { id: 'x', provider: 'opencode-go', headers: { 'x-opencode-session': 'model-level' } },
+    { sessionId: 'sess-1' },
+  )
+  ok('模型描述符上的会话头同样优先',
+    modelPinned?.headers?.['x-opencode-session'] === undefined,
+    JSON.stringify(modelPinned?.headers))
+
+  ok('stream 与 streamSimple 都被覆盖',
+    models.stream(GC, {}, { sessionId: 'sess-1' })?.headers?.['x-opencode-session'] === 'sess-1')
+
+  // The two policies meet on one request: the prototype wrapper adds headers, the
+  // provider wrapper adds the cache option, and neither overwrites the other.
+  const both = dispatch({ id: 'deepseek-v4.1-flash', provider: 'opencode-go' }, { sessionId: 'sess-1' })
+  ok('会话头与 cacheRetention 在同一请求上叠加',
+    both?.headers?.['x-opencode-session'] === 'sess-1' && both?.cacheRetention === 'long',
+    JSON.stringify(both))
+
+  ok('isOpencodeRoute：provider 身份与 baseUrl 都认，其余都不认',
+    mod.isOpencodeRoute({ provider: 'opencode-go' }) === true
+      && mod.isOpencodeRoute({ provider: 'opencode' }) === true
+      && mod.isOpencodeRoute({ provider: 'custom', baseUrl: 'https://opencode.ai/zen/go/v1' }) === true
+      && mod.isOpencodeRoute({ provider: 'deepseek', baseUrl: 'https://api.deepseek.com' }) === false
+      && mod.isOpencodeRoute(null) === false
+      && mod.isOpencodeRoute({ provider: 'x', baseUrl: 'not a url' }) === false)
+
+  for (const dispose of disposers) dispose()
+  ok('卸载后 models prototype 恢复原函数',
+    FakeModels.prototype.stream === originalStream && FakeModels.prototype.streamSimple === originalStreamSimple,
+    FakeModels.prototype.stream === originalStream ? '两个入口都还原' : '★仍有包装残留')
+  ok('卸载后不再注入', dispatch(GC, { sessionId: 'sess-1' })?.headers === undefined)
+
+  globalThis.fetch = mainFetch
+}
+
 // ── 9. 继承旧版本状态：缺失字段必须补齐 ────────────────────────────────────
 //
 // Last, on purpose: it swaps the shared slot for a hand-made 0.1.5 state and
