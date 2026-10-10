@@ -1,7 +1,7 @@
 {
   "name": "dsh-opencode-live-models",
   "version": "0.3.3",
-  "description": "Keep OpenCode Go models fresh without waiting for bundled pi-ai catalog updates",
+  "description": "Keep the OpenCode Go model catalog current, with the gateway's session header and prompt cache in place, without waiting for a pi-ai release",
   "license": "MIT",
   "type": "module",
   "scripts": {

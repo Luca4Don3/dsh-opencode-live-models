@@ -33,7 +33,9 @@ dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 
 Pi 自己的条目豁免这项检查：Pi 仍在发布、而 OCG 已经下线的模型会留在选择器里，直到 Pi 也移除它。跟随 Pi 的节奏是本插件的约定；把网关的缺口当成下线，退掉的恰恰是 Pi 领先的那批 id。
 
-插件更新 pi-ai 中 `opencode-go` 的模型列表，并在请求经过时合并一个选项：DeepSeek 模型拿到 `cacheRetention: 'long'`。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
+插件更新 pi-ai 中 `opencode-go` 的模型列表，并在请求发往线上之前改写两样东西。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
+
+**会话头，覆盖每一条 opencode 路由。** OpenCode Go 会拒绝不带 `x-opencode-session` 的请求（`400 MissingSessionID`），并要求客户端自报身份、不要看起来像一个通用 SDK——而 pi-ai 在每条路由上带的是 **pi 的** user agent。pi-ai 自己的注入只覆盖它那两个内置 provider 描述符，别的一概不管；因此本插件包装 `Models` 原型，为 provider 是 `opencode`/`opencode-go`、或 baseUrl 落在 `opencode.ai` 的任何模型补上 `x-opencode-session`（取自会话 ID）与 `x-opencode-client: dsh`。选原型这一层有两个原因：为自定义 id 新增的路由——同一个网关换个名字——对内置注入是不可见的；而 `Models` 集合会在 profiles 变化时重建，它背后的类不会。已经在请求选项或模型描述符上显式配置的头始终优先。
 
 **为什么是这个选项。** `cacheRetention` 是 DSH 暴露的、唯一能左右网关前缀缓存存活的两个线上字段的开关——`prompt_cache_key` 与 `prompt_cache_retention: "24h"`。pi-ai 默认取 `"short"`，这两个字段一个都不发，于是每轮只能靠网关自己大约五分钟的自动窗口命中；而 DeepSeek 官方端点的磁盘缓存可以存活数小时到数天。同一个会话走 `opencode-go` 的命中率低于走官方 API，原因就在这里。该设置在 pi-ai 里是**提供方级**字段、没有按模型的形态，放任不管会波及这条路由上的每一个模型；本插件点名的是匹配 `/^deepseek/i` 的那些。`kimi-k2.6` 是上游唯一一个已经通过 `compat.supportsLongCacheRetention` 主动退出的模型，而这条路由上没有任何模型声明 `cacheControlFormat`，所以匹配到的 id 正好就是行为会变的那些。叠加层的 `stream` / `streamSimple` 带着这个选项转发给原 provider，传输、鉴权与提供方级标头都不受影响。
 
@@ -88,6 +90,7 @@ OCG_FIXTURES=/path/to/fixtures npm test
 - 没有描述符的模型不会出现在选择器中。
 - 两个端点、5 分钟轮询间隔和缓存有效期都固定在源码里。其中网关 base URL **是刻意固定的**——远端目录只决定有哪些模型，绝不决定请求发去哪里——所以要指向别的网关就得改 `lib/index.js`。
 - long 缓存保活写死在 `lib/index.js`，只匹配 `/^deepseek/i` 的模型 id。这条路由上其余模型保持 pi-ai 的默认值，且没有配置开关——想换一组就改那里的正则。
+- 会话头包装装在 `Models` 原型上，因此它对进程注册的**每一个** provider 都会被问到，而不只是 opencode 的。是 `opencode.ai` 这个 host 判断让其余路由保持原样——这也意味着该包装并不局限于本插件管理的那些模型 id。
 - 插件依赖 `llm-pi-ai` 的内部接口。如果 DSH 更新后接口发生变化，插件会记录警告并保留原有目录。
 
 ## 许可证

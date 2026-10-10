@@ -3,7 +3,9 @@
 English | [中文](README.zh-CN.md)
 
 DeepSeek Harness (DSH) ships with a pi-ai model catalog that can lag behind
-OpenCode Go. This plugin updates it at runtime.
+OpenCode Go. This plugin updates it at runtime, and keeps the gateway's two
+per-request requirements — a session header and a usable prompt-cache retention —
+in place for the models it manages.
 
 ## Install
 
@@ -48,11 +50,24 @@ has retired it stays in the picker until Pi drops it — following Pi's cadence 
 this plugin's contract, and treating a gateway gap as a retirement would retire
 exactly the ids Pi is ahead on.
 
-The plugin updates pi-ai's `opencode-go` model list, and merges one request option
-on the way through: `cacheRetention: 'long'` for DeepSeek models. Requests
-continue through the installed pi-ai transport and authentication.
+The plugin updates pi-ai's `opencode-go` model list, and rewrites two things on
+the way to the wire. Requests continue through the installed pi-ai transport and
+authentication.
 
-**Why that one option.** `cacheRetention` is the only switch DSH exposes for the
+**Session headers, on every opencode route.** OpenCode Go refuses a request that
+arrives without `x-opencode-session` (`400 MissingSessionID`) and asks a client to
+identify itself rather than look like a generic SDK — while pi-ai puts *pi's* user
+agent on every route. pi-ai's own injection covers its two built-in provider
+descriptors and nothing else, so this plugin wraps the `Models` prototype and
+supplies `x-opencode-session` (from the session id) plus `x-opencode-client: dsh`
+for any model whose provider is `opencode`/`opencode-go` or whose base URL is on
+`opencode.ai`. The prototype is the right layer for two reasons: a route added for
+a custom id — the same gateway under a different name — is invisible to the
+built-in injection, and the `Models` collection is rebuilt whenever profiles
+change while the class behind it is not. A header already configured on the
+request options or on the model descriptor always wins.
+
+**Why the cache option.** `cacheRetention` is the only switch DSH exposes for the
 two wire fields that keep the gateway's prefix cache alive — `prompt_cache_key`
 and `prompt_cache_retention: "24h"`. pi-ai defaults it to `"short"`, which sends
 neither, so a turn is only ever served from the gateway's own roughly five-minute
@@ -153,6 +168,10 @@ OCG_FIXTURES=/path/to/fixtures npm test
 - The long cache retention is hard-coded to model ids matching `/^deepseek/i` in
   `lib/index.js`. Every other model on the route keeps pi-ai's default, and there
   is no config flag — widen the pattern there if you want a different set.
+- The session-header wrapper is installed on the `Models` prototype, so it is
+  offered to every provider the process registers, not only opencode's. The
+  `opencode.ai` host check is what keeps every other route untouched — and it is
+  also why the wrapper is not limited to the ids this plugin manages.
 - The plugin uses `llm-pi-ai` internals. If a DSH update changes them, it logs a
   warning and leaves the installed catalog in place.
 
