@@ -62,6 +62,28 @@ const ok = (name, pass, detail = '') => results.push({ name, pass, detail })
  * the behaviour under test there.
  */
 const STATE_KEY = Symbol.for('dsh-opencode-live-models.state')
+
+/**
+ * One scope's entry out of a cache payload, whichever schema wrote it.
+ * @param {any} payload - the parsed cache file.
+ * @param {string} providerId - the provider id to read.
+ * @returns {any} the entry, or `undefined`.
+ */
+function cachedScope(payload, providerId) {
+  return payload?.scopes?.[providerId]
+}
+
+/**
+ * A cache payload for one provider, in the schema the plugin currently writes.
+ * @param {string} providerId - the provider id.
+ * @param {any[]} models - its catalog.
+ * @param {string | null} [etag] - its validator.
+ * @returns {any} the payload.
+ */
+function cachePayload(providerId, models, etag = null) {
+  return { version: 2, scopes: { [providerId]: { savedAt: Date.now(), etag, models } } }
+}
+
 function freshState() {
   delete globalThis[STATE_KEY]
   // The on-disk cache too. Scenarios share one sandbox directory, so a catalog
@@ -120,15 +142,16 @@ const logs = []
 let patched = 0
 const installedModels = { list: INSTALLED.slice() }
 const collection = {
-  getProvider: (id) => (id === 'opencode-go' ? baseProvider : undefined),
+  getProvider: (id) => (id === OPENCODE_GO ? baseProvider : undefined),
   setProvider: (p) => { patched += 1; Object.assign(baseProvider, p) },
   // The real pi-ai Models collection has this; without it every read that goes
   // through the collection silently yields [] and the drift report undercounts
   // itself — which is exactly how a broken lookup hid behind a green probe.
-  getModels: (id) => (id === 'opencode-go' ? baseProvider.getModels() : []),
+  getModels: (id) => (id === OPENCODE_GO ? baseProvider.getModels() : []),
 }
+const OPENCODE_GO = 'opencode-go'
 let baseProvider = {
-  id: 'opencode-go',
+  id: OPENCODE_GO,
   auth: {},
   getModels: () => installedModels.list,
   stream: () => { throw new Error('not used') },
@@ -138,7 +161,7 @@ const adapter = {
   current() { return { profiles: new Map(), models: collection } },
 }
 const ctx = {
-  llm: { adapters: new Map([['opencode-go', { adapter }]]) },
+  llm: { adapters: new Map([[OPENCODE_GO, { adapter }]]) },
   logger: {
     info: (...a) => logs.push(['info', a.join(' ')]),
     warn: (...a) => logs.push(['warn', a.join(' ')]),
@@ -155,6 +178,63 @@ const triggerRefresh = () => { intervalFn?.() ; return new Promise(r => setTimeo
 
 const mod = await import('./lib/index.js')
 const wait = () => new Promise(r => setTimeout(r, 60))
+
+/**
+ * A mock of pi-ai's `Models` collection for one provider.
+ *
+ * The real collection's `setProvider` does *not* mutate the provider object in
+ * place — it stores the object under its id — and that difference is what the
+ * unmount scenarios turn on: a mock that assigned onto the base would let the
+ * wrapper "restore" the provider while the base object itself never came back.
+ * So the wrapper is held beside the raw provider here, and the raw one is what
+ * `_original` exposes for an assertion to compare against.
+ *
+ * `getProvider` and `getModels` only answer for their own provider id: a call
+ * for a route this collection does not carry is a bug in the plugin, not a
+ * scenario, and returning `undefined` for it is what makes {@link activeScopes}
+ * skip the route instead of fetching it.
+ * @param {string} providerId - the provider id this collection serves.
+ * @param {() => any[]} installed - the installed catalog, read per call.
+ * @returns {any} the collection, with `_original` and `_current` for assertions.
+ */
+function makeColl(providerId, installed, rawFactory) {
+  const raw = rawFactory
+    ? rawFactory()
+    : {
+      id: providerId,
+      auth: {},
+      // pi-ai writes `provider` onto every catalog descriptor, and the merged
+      // roster is read back through the model's own provider id — so the mock
+      // carries it too, or the plugin would filter nothing and the roster
+      // scenarios would pass for the wrong reason.
+      getModels: () => installed().map(m => (m && m.provider === undefined ? { ...m, provider: providerId } : m)),
+      stream: () => { throw new Error('not used') },
+      streamSimple: () => { throw new Error('not used') },
+    }
+  const coll = {
+    _original: raw,
+    _current: raw,
+    _providerId: providerId,
+    /** The catalog in force, i.e. read through whatever wrapper is installed. */
+    mergedModels: () => coll._current.getModels(),
+    getProvider: id => (id === providerId ? coll._current : undefined),
+    setProvider: p => { coll._current = p },
+    getModels: id => (id === providerId ? coll._current.getModels() : []),
+  }
+  return coll
+}
+
+/**
+ * The adapter registry a mount context carries, for one collection.
+ * @param {any} coll - a {@link makeColl} collection.
+ * @returns {Map<string, any>} one adapter registration per provider asked for.
+ */
+function collAdapter(...colls) {
+  return new Map(colls.map(coll => [
+    coll._providerId,
+    { adapter: { current: () => ({ profiles: new Map(), models: coll }) } },
+  ]))
+}
 
 /**
  * Mount a plugin instance and let its background first refresh settle.
@@ -174,7 +254,7 @@ async function mount(plugin, mountCtx, ticks = 5) {
 
 await mount(mod, ctx)
 
-const merged = () => collection.getProvider('opencode-go').getModels()
+const merged = () => collection.getProvider(OPENCODE_GO).getModels()
 const ids = () => merged().map(m => m.id).sort()
 
 // ── 0. 固件与当前 pi-ai 的关系 ──────────────────────────────────────────────
@@ -227,17 +307,7 @@ const ids = () => merged().map(m => m.id).sort()
   const adopt = async (label, catalog) => {
     const mainFetch = globalThis.fetch
     const warns = []
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     globalThis.fetch = async (url) => {
       const u = String(url)
       if (u.startsWith('https://pi.dev/')) {
@@ -253,14 +323,14 @@ const ids = () => merged().map(m => m.id).sort()
     freshState()
     const mod = await import(`./lib/index.js?gate-${label}`)
     await mount(mod, {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: {
         info: () => {}, warn: (...a) => warns.push(a.join(' ')),
         debug: () => {},
       },
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
-    const got = coll.getModels('opencode-go')
+    const got = coll.mergedModels()
     globalThis.fetch = mainFetch
     return { got, warns }
   }
@@ -330,28 +400,18 @@ const ids = () => merged().map(m => m.id).sort()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     globalThis.setInterval = () => ({ unref() {} })
     freshState()
     const mod = await import('./lib/index.js?no-bundled-descriptors')
     await mount(mod, {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
     const installedEntry = INSTALLED.find(m => m.id === 'deepseek-v4.1-flash')
-    const served = coll.getModels('opencode-go').find(m => m.id === 'deepseek-v4.1-flash')
-    const gapFilled = coll.getModels('opencode-go').find(m => m.id === 'space-bunny')
+    const served = coll.mergedModels().find(m => m.id === 'deepseek-v4.1-flash')
+    const gapFilled = coll.mergedModels().find(m => m.id === 'space-bunny')
     ok('Pi 不可达时，内置目录自带的模型仍用内置描述符（没有本地副本可覆盖它）',
       served?.inputLimits !== undefined,
       `内置 inputLimits=${installedEntry?.inputLimits !== undefined}，目录里=${served?.inputLimits !== undefined}`)
@@ -489,7 +549,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   ok('pi.dev 不可达时退回 last-known-good 目录',
     ids().includes('deepseek-v4.1-flash') && ids().includes('space-bunny'))
   ok('pi.dev 失败有告警且不静默',
-    logs.some(([l, m]) => l === 'warn' && m.includes('pi.dev catalog refresh failed')))
+    logs.some(([l, m]) => l === 'warn' && m.includes('catalog refresh failed')))
   ok('pi.dev 失败时原有目录未丢', INSTALLED_IDS.every(i => ids().includes(i)))
 }
 
@@ -548,21 +608,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  let base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? base : undefined),
-    setProvider: p => { Object.assign(base, p) },
-    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-  }
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const pLogs = []
   const pCtx = {
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    llm: { adapters: collAdapter(coll) },
     logger: {
       info: (...a) => pLogs.push(['info', a.join(' ')]),
       warn: (...a) => pLogs.push(['warn', a.join(' ')]),
@@ -615,21 +666,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  let base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? base : undefined),
-    setProvider: p => { Object.assign(base, p) },
-    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-  }
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const oLogs = []
   const oCtx = {
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    llm: { adapters: collAdapter(coll) },
     logger: {
       info: (...a) => oLogs.push(['info', a.join(' ')]),
       warn: (...a) => oLogs.push(['warn', a.join(' ')]),
@@ -641,15 +683,15 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   const ordered = await import('./lib/index.js?reordered')
   await mount(ordered, oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
-  const orderBefore = base.getModels().map(m => m.id).join(',')
-  const bootDescriptors = base.getModels().map(m => ({ ...m }))
+  const orderBefore = coll.mergedModels().map(m => m.id).join(',')
+  const bootDescriptors = coll.mergedModels().map(m => ({ ...m }))
 
   tick?.(); await wait()
   const unchanged = oLogs.filter(([l]) => l === 'emit').length
   reorder = true
   tick?.(); await wait()
   const afterReorder = oLogs.filter(([l]) => l === 'emit').length
-  const orderAfter = base.getModels().map(m => m.id).join(',')
+  const orderAfter = coll.mergedModels().map(m => m.id).join(',')
 
   ok('目录顺序真的变了', orderBefore !== orderAfter,
     `${orderBefore.split(',').slice(0, 3)} -> ${orderAfter.split(',').slice(0, 3)} …`)
@@ -657,7 +699,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   // than a fixture against a copy of itself, which is true by construction and
   // would stay green no matter what the code under test did.
   const descriptorsBefore = new Map(bootDescriptors.map(m => [m.id, JSON.stringify(m)]))
-  const descriptorsAfter = new Map(base.getModels().map(m => [m.id, JSON.stringify(m)]))
+  const descriptorsAfter = new Map(coll.mergedModels().map(m => [m.id, JSON.stringify(m)]))
   const changedDescriptors = [...descriptorsAfter]
     .filter(([id, json]) => descriptorsBefore.get(id) !== json)
     .map(([id]) => id)
@@ -689,18 +731,8 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  const base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  let current = base
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? current : undefined),
-    setProvider: p => { current = p },
-    getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-  }
-  const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
+  const adapters = collAdapter(coll)
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const events = []
@@ -715,12 +747,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   })
   // Deliberately no wait: the network has not answered and never will inside
   // this tick. Whatever the picker can show must already be published.
-  const immediate = coll.getModels('opencode-go').map(m => m.id)
+  const immediate = coll.mergedModels().map(m => m.id)
   const emittedNow = events.length
 
   release()
   await wait(); await wait(); await wait()
-  const settled = coll.getModels('opencode-go').map(m => m.id)
+  const settled = coll.mergedModels().map(m => m.id)
 
   ok('挂载在网络返回前就已发布（不阻塞 DSH）',
     emittedNow >= 1 && immediate.length === INSTALLED.length,
@@ -755,18 +787,8 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  const base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  let current = base
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? current : undefined),
-    setProvider: p => { current = p },
-    getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-  }
-  const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
+  const adapters = collAdapter(coll)
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const logs = []
@@ -783,9 +805,9 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     effect: fn => { fn() },
     on: () => {},
   })
-  const afterFirst = coll.getModels('opencode-go').map(m => m.id)
+  const afterFirst = coll.mergedModels().map(m => m.id)
   tick?.(); await wait(); await wait(); await wait()
-  const afterSecond = coll.getModels('opencode-go').map(m => m.id)
+  const afterSecond = coll.mergedModels().map(m => m.id)
 
   ok('首次请求不带条件头（还没有 ETag）', seen[0] === null, `${seen[0]}`)
   ok('第二次请求带上 If-None-Match', seen[1] === ETAG, `${seen[1]}`)
@@ -827,18 +849,8 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   }
 
   const runOnce = async (label) => {
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
-    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     freshState()
@@ -848,7 +860,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       logger: { info: () => {}, warn: () => {}, debug: () => {} },
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
-    return coll.getModels('opencode-go').map(m => m.id)
+    return coll.mergedModels().map(m => m.id)
   }
 
   const first = await runOnce('online')
@@ -856,12 +868,14 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   try {
     written = JSON.parse(await readFile(join(dir, 'opencode-live-models-catalog.json'), 'utf8'))
   } catch { /* asserted below */ }
-  ok('接受后的目录被写入缓存文件', written !== null && Array.isArray(written.models) && written.models.length > 0,
-    written ? `${written.models.length} 条` : '文件不存在')
+  const writtenGo = cachedScope(written, OPENCODE_GO)
+  ok('接受后的目录被写入缓存文件',
+    Array.isArray(writtenGo?.models) && writtenGo.models.length > 0,
+    writtenGo ? `${writtenGo.models.length} 条` : '文件不存在')
   ok('缓存只保存 sanitized 之后的描述符（无可劫持的 baseUrl）',
-    Array.isArray(written?.models)
-      && written.models.every(m => typeof m.baseUrl === 'string' && m.baseUrl.startsWith('https://opencode.ai/')),
-    written ? `baseUrl 样本 ${written.models[0]?.baseUrl}` : '—')
+    Array.isArray(writtenGo?.models)
+      && writtenGo.models.every(m => typeof m.baseUrl === 'string' && m.baseUrl.startsWith('https://opencode.ai/')),
+    writtenGo ? `baseUrl 样本 ${writtenGo.models[0]?.baseUrl}` : '—')
 
   // A restart with the network down: the last known good catalog is all there is.
   online = false
@@ -875,7 +889,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   // A tampered cache must not survive the same validation a live response gets.
   try {
     const { writeFile } = await import('node:fs/promises')
-    const hostile = { version: 1, savedAt: Date.now(), models: [{ id: 'cached-evil', api: 'constructor' }] }
+    const hostile = cachePayload(OPENCODE_GO, [{ id: 'cached-evil', api: 'constructor' }])
     await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(hostile), 'utf8')
   } catch { /* asserted below */ }
   const tamperedModels = await runOnce('tampered')
@@ -889,9 +903,8 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   {
     const { writeFile: wf } = await import('node:fs/promises')
     const CACHED_ETAG = '"restart-etag"'
-    await wf(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify({
-      version: 1, savedAt: Date.now(), etag: CACHED_ETAG, models: PI_DEV,
-    }), 'utf8')
+    await wf(join(dir, 'opencode-live-models-catalog.json'),
+      JSON.stringify(cachePayload(OPENCODE_GO, PI_DEV, CACHED_ETAG)), 'utf8')
 
     const seen = []
     online = true
@@ -916,11 +929,10 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
 
   // A cache that lost its capacities must be rejected whole, not partly kept.
   const { writeFile } = await import('node:fs/promises')
-  const gutted = {
-    version: 1,
-    savedAt: Date.now(),
-    models: PI_DEV.map(m => ({ id: m.id, api: m.api, name: m.name, input: m.input })),
-  }
+  const gutted = cachePayload(
+    OPENCODE_GO,
+    PI_DEV.map(m => ({ id: m.id, api: m.api, name: m.name, input: m.input })),
+  )
   await writeFile(join(dir, 'opencode-live-models-catalog.json'), JSON.stringify(gutted), 'utf8')
   const guttedRun = await runOnce('gutted')
   ok('缓存缺少 contextWindow/maxTokens/cost 时整份拒绝，退回网络数据',
@@ -945,22 +957,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const adapters = new Map()
-    let onEvt = null
     // A collection for the adapter to hang off: without a registered adapter the
     // deferred feed has no baseline to judge against and is correctly left
     // alone, which is what the late-registration guard is for.
-    const lateBase = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let lateCurrent = lateBase
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? lateCurrent : undefined),
-      setProvider: p => { lateCurrent = p },
-      getModels: id => (id === 'opencode-go' ? lateCurrent.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = new Map()
+    let onEvt = null
     globalThis.fetch = withEtag
     freshState()
     const deferred = await import('./lib/index.js?deferred-cache')
@@ -983,14 +985,15 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     for (let i = 0; i < 30; i += 1) {
       try {
         const parsed = JSON.parse(await rf(join(dir, 'opencode-live-models-catalog.json'), 'utf8'))
-        if (parsed?.etag) { saved = parsed; break }
+        if (cachedScope(parsed, OPENCODE_GO)?.etag) { saved = parsed; break }
       } catch { /* not written yet */ }
       await wait()
     }
+    const savedGo = cachedScope(saved, OPENCODE_GO)
     ok('延迟采纳的目录同样落盘（此前这条路径漏掉了）',
-      saved !== null && Array.isArray(saved.models) && saved.models.length > 0,
-      saved ? `${saved.models.length} 条` : '文件不存在')
-    ok('延迟采纳的目录同样记住 ETag', saved?.etag === '"deferred-etag"', `${saved?.etag}`)
+      Array.isArray(savedGo?.models) && savedGo.models.length > 0,
+      savedGo ? `${savedGo.models.length} 条` : '文件不存在')
+    ok('延迟采纳的目录同样记住 ETag', savedGo?.etag === '"deferred-etag"', `${savedGo?.etag}`)
   }
 
   // Two module instances, two adoptions, one shared state. The invariant is not
@@ -1000,20 +1003,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   {
     const { readFile: rf2 } = await import('node:fs/promises')
     const catPath = join(dir, 'opencode-live-models-catalog.json')
-    const baseOf = () => ({
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    })
-    const makeCollection = () => {
-      const base = baseOf()
-      let current = base
-      return {
-        getProvider: id => (id === 'opencode-go' ? current : undefined),
-        setProvider: p => { current = p },
-        getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-      }
-    }
+    const makeCollection = () => makeColl('opencode-go', () => INSTALLED.slice())
 
     // Adoption A: the full catalog, tagged "etag-A".
     const first = PI_DEV
@@ -1057,20 +1047,21 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     for (let i = 0; i < 40; i += 1) {
       try {
         const parsed = JSON.parse(await rf2(catPath, 'utf8'))
-        if (parsed?.etag === '"etag-B"') { final = parsed; break }
+        if (cachedScope(parsed, OPENCODE_GO)?.etag === '"etag-B"') { final = parsed; break }
       } catch { /* not written yet */ }
       await wait()
     }
 
     const aIds = new Set(first.map(m => m.id))
     const bIds = new Set(second.map(m => m.id))
-    const onDisk = new Set(final?.models?.map(m => m.id) ?? [])
+    const onDiskGo = cachedScope(final, OPENCODE_GO)
+    const onDisk = new Set(onDiskGo?.models?.map(m => m.id) ?? [])
     const isA = onDisk.size === aIds.size && [...aIds].every(id => onDisk.has(id))
     const isB = onDisk.size === bIds.size && [...bIds].every(id => onDisk.has(id))
-    const paired = (isA && final?.etag === '"etag-A"') || (isB && final?.etag === '"etag-B"')
+    const paired = (isA && onDiskGo?.etag === '"etag-A"') || (isB && onDiskGo?.etag === '"etag-B"')
 
     ok('跨模块实例：写队列共享，后写入的目录最终生效',
-      final?.etag === '"etag-B"' && isB,
+      onDiskGo?.etag === '"etag-B"' && isB,
       `落盘 etag=${final?.etag}，目录${isB ? '与 B 一致' : isA ? '★是旧的 A' : '★两者都不是'}`)
     ok('目录与 ETag 始终来自同一次采纳（不会拼出错配）',
       paired,
@@ -1141,21 +1132,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    let base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? base : undefined),
-      setProvider: p => { Object.assign(base, p) },
-      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     const sLogs = []
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const sCtx = {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: {
         info: (...a) => sLogs.push(['info', a.join(' ')]),
         warn: (...a) => sLogs.push(['warn', a.join(' ')]),
@@ -1167,7 +1149,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
-      snap: () => base.getModels().map(m => m.id),
+      snap: () => coll.mergedModels().map(m => m.id),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await new Promise(r => setTimeout(r, 60)) },
     }
@@ -1237,27 +1219,17 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
       return new Response(JSON.stringify(body), { status: 200 })
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => { throw new Error('not used') },
-      streamSimple: () => { throw new Error('not used') },
-    }
-    const coll = {
-      getProvider: (id) => (id === 'opencode-go' ? base : undefined),
-      setProvider: (p) => { Object.assign(base, p) },
-      getModels: (id) => (id === 'opencode-go' ? base.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     const warns = []
     const debugs = []
     freshState()
     const mod = await import(`./lib/index.js?envelope-${label}`)
     await mount(mod, {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: { info: () => {}, warn: (m) => warns.push(m), debug: (m) => debugs.push(m) },
       emit: () => {}, effect: () => {}, on: () => {},
     })
-    return { ids: base.getModels().map(m => m.id), warns, debugs }
+    return { ids: coll.mergedModels().map(m => m.id), warns, debugs }
   }
 
   // The roster arrived as `{ object, data }` until now, and the parser that read
@@ -1315,26 +1287,17 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  let base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? base : undefined),
-    setProvider: p => { Object.assign(base, p) },
-    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-  }
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
   globalThis.setInterval = () => ({ unref() {} })
   const hCtx = {
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    llm: { adapters: collAdapter(coll) },
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
     freshState()
   const hostile = await import('./lib/index.js?hostile')
   await mount(hostile, hCtx)
-  const got = base.getModels()
+  const got = coll.mergedModels()
   const completions = got.find(m => m.id === 'evil-completions')
   const anthropic = got.find(m => m.id === 'evil-anthropic')
   ok('远端 baseUrl 被忽略：openai 类固定到 /v1', completions?.baseUrl === 'https://opencode.ai/zen/go/v1',
@@ -1388,21 +1351,12 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     }
     throw new Error(`unexpected fetch: ${u}`)
   }
-  let base = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => {}, streamSimple: () => {},
-  }
-  const coll = {
-    getProvider: id => (id === 'opencode-go' ? base : undefined),
-    setProvider: p => { Object.assign(base, p) },
-    getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-  }
+  const coll = makeColl('opencode-go', () => INSTALLED.slice())
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const mLogs = []
   const mCtx = {
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+    llm: { adapters: collAdapter(coll) },
     logger: {
       info: (...a) => mLogs.push(['info', a.join(' ')]),
       warn: (...a) => mLogs.push(['warn', a.join(' ')]),
@@ -1416,8 +1370,8 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   tick?.(); await wait(); await wait()
   tick?.(); await wait(); await wait()
 
-  const control = base.getModels().find(m => m.id === 'control-plane')
-  const future = base.getModels().find(m => m.id === 'future-model')
+  const control = coll.mergedModels().find(m => m.id === 'control-plane')
+  const future = coll.mergedModels().find(m => m.id === 'future-model')
   const leaked = ['url', 'endpoint', 'headers', 'auth', 'apiKey', 'credentials', 'proxy', 'env', 'fetch', 'transport']
     .filter(key => control?.[key] !== undefined)
   ok('控制面字段一个都没透传（url/endpoint/auth/proxy/apiKey/credentials/env/fetch/transport/headers）',
@@ -1448,19 +1402,10 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
 // ── 8. 降级：首次启动即 pi.dev 不可达（无骨架，顺序必须保持 installed 原序）─────
 {
   mode = 'no-pidev'
-  let base2 = {
-    id: 'opencode-go',
-    getModels: () => INSTALLED.slice(),
-    stream: () => { throw new Error('not used') },
-    streamSimple: () => { throw new Error('not used') },
-  }
-  const collection2 = {
-    getProvider: (id) => (id === 'opencode-go' ? base2 : undefined),
-    setProvider: (p) => { Object.assign(base2, p) },
-  }
+  const collection2 = makeColl('opencode-go', () => INSTALLED.slice())
   const ctx2 = {
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: collection2 }) } }]]) },
-    logger: { info: () => {}, warn: () => {} },
+    llm: { adapters: collAdapter(collection2) },
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {},
     effect: () => {},
     on: () => {},
@@ -1470,7 +1415,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
 freshState()
   const fresh = await import('./lib/index.js?firstboot')
   await mount(fresh, ctx2)
-  const order2 = base2.getModels().map(m => m.id)
+  const order2 = collection2.mergedModels().map(m => m.id)
   const liveSet = new Set(LIVE_IDS)
   const installedOrder = INSTALLED.map(m => m.id).filter(id => liveSet.has(id))
   ok('首次启动即 pi.dev 不可达：退回 installed 原序（无主序时不臆造顺序）',
@@ -1504,28 +1449,21 @@ freshState()
       // step is a mixture; a cross-feed scenario would silently read the wrong
       // pair. The step advances in step(), once per refresh.
       const step = script[Math.min(poll, script.length - 1)]
+
       if (step.delay) await new Promise(r => setTimeout(r, step.delay))
       if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(step.catalog), { status: 200 })
       if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
         return new Response(JSON.stringify({ data: step.roster.map(id => ({ id })) }), { status: 200 })
       }
       throw new Error(`unexpected fetch: ${u}`)
+      // TRACED
     }
-    let base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? base : undefined),
-      setProvider: p => { Object.assign(base, p) },
-      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const sLogs = []
     const sCtx = {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: {
         info: (...a) => sLogs.push(['info', a.join(' ')]),
         warn: (...a) => sLogs.push(['warn', a.join(' ')]),
@@ -1537,7 +1475,7 @@ freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
-      snap: () => base.getModels().map(m => m.id),
+      snap: () => coll.mergedModels().map(m => m.id),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => {
         poll += 1
@@ -1658,21 +1596,12 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    let base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? base : undefined),
-      setProvider: p => { Object.assign(base, p) },
-      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const cLogs = []
     const cCtx = {
-      llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]]) },
+      llm: { adapters: collAdapter(coll) },
       logger: {
         info: (...a) => cLogs.push(['info', a.join(' ')]),
         warn: (...a) => cLogs.push(['warn', a.join(' ')]),
@@ -1684,7 +1613,7 @@ freshState()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, cCtx)
     return {
-      snap: () => base.getModels().map(m => m.id),
+      snap: () => coll.mergedModels().map(m => m.id),
       warns: () => cLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
       step: async () => { tick?.(); await wait(); await wait() },
     }
@@ -1704,7 +1633,7 @@ freshState()
     ok(`pi.dev 返回${why}时 last-known-good 不被覆盖`, s.snap().length === good,
       `${good} -> ${s.snap().length}`)
     ok(`pi.dev 返回${why}时有明确告警（不是静默降级）`,
-      s.warns().some(w => w.includes('pi.dev catalog refresh failed')), s.warns().find(w => w.includes('pi.dev catalog refresh failed'))?.slice(0, 110) ?? '无')
+      s.warns().some(w => w.includes('catalog refresh failed')), s.warns().find(w => w.includes('catalog refresh failed'))?.slice(0, 110) ?? '无')
   }
 
   // The other direction: a new envelope that is *populated* is a new shape, not
@@ -1714,7 +1643,7 @@ freshState()
     const good = s.snap().length
     await s.step()
     ok('envelope 变成 data 但内容正常时被正确识别，不误杀',
-      s.snap().length === good && !s.warns().some(w => w.includes('pi.dev catalog refresh failed')),
+      s.snap().length === good && !s.warns().some(w => w.includes('catalog refresh failed')),
       `${good} -> ${s.snap().length}`)
   }
 
@@ -1743,21 +1672,12 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
     // A real provider slot, not `Object.assign(base, p)`: the unload path
     // restores a provider only while ours is still the installed one, and a
     // mock that mutates in place makes that identity check permanently false —
-    // hiding the bug instead of testing it.
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
+    // hiding the bug instead of testing it. `makeColl` holds the wrapper beside
+    // the raw provider for exactly that check.
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     const adapters = new Map()
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
@@ -1796,10 +1716,24 @@ freshState()
       },
       adapter,
       originalCurrent,
-      snap: () => coll.getModels('opencode-go').map(m => m.id),
+      snap: () => coll.mergedModels().map(m => m.id),
       installedOnly: () => INSTALLED_IDS.filter(i => !PI_DEV.some(m => m.id === i)),
       warns: () => sLogs.filter(([l]) => l === 'warn').map(([, m]) => m),
-      step: async () => { poll += 1; tick?.(); await wait(); await wait(); await wait() },
+      /**
+       * Advance the scripted gateway by one poll.
+       *
+       * The wait happens *before* the tick as well as after: `attach()` starts a
+       * first poll of its own, and a tick fired while that one is still in flight
+       * is joined to it instead of starting the next request — which left the
+       * baseline at the installed catalog and made a "consecutive" scenario look
+       * like two unrelated observations.
+       */
+      step: async () => {
+        poll += 1
+        await wait(); await wait()
+        tick?.()
+        await wait(); await wait(); await wait()
+      },
       dispose() { for (const d of disposers) d() },
     }
   }
@@ -1814,7 +1748,7 @@ freshState()
     ]
     const s = await lateAdapter('nonconsecutive', script)
     s.attach()
-    await wait(); await wait()
+    await wait(); await wait(); await wait(); await wait()
     const full = s.snap().length
     await s.step()
     await s.step()
@@ -1834,7 +1768,9 @@ freshState()
     ]
     const s = await lateAdapter('consecutive', script)
     s.attach()
-    await wait(); await wait()
+    // The adapter update is what starts the first poll; four ticks is what it
+    // takes for that poll to land in the scenarios here.
+    await wait(); await wait(); await wait(); await wait()
     const full = s.snap().length
     await s.step()
     const held = s.snap().length
@@ -1853,7 +1789,7 @@ freshState()
     ]
     const s = await lateAdapter('late-adapter', script)
     s.attach()
-    await wait(); await wait()
+    await wait(); await wait(); await wait(); await wait()
     ok('adapter 晚注册：单条名单被挂起，installed-only 模型一个不丢',
       s.installedOnly().every(i => s.snap().includes(i)),
       `目录 ${s.snap().length}；缺失 ${s.installedOnly().filter(i => !s.snap().includes(i)).join(',') || '无'}`)
@@ -1906,17 +1842,8 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? base : undefined),
-      setProvider: p => { Object.assign(base, p) },
-      getModels: id => (id === 'opencode-go' ? base.getModels() : []),
-    }
-    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     // The reload must run the *second* instance's timer, so the context has to
@@ -1938,15 +1865,15 @@ freshState()
     // one left behind, which is the whole point of this section.
     const first = await import('./lib/index.js?hmr-first')
     await mount(first, makeCtx([]))
-    const wrapped = coll.getProvider('opencode-go')
-    const beforeReload = coll.getModels('opencode-go').map(m => m.id)
+    const wrapped = coll.getProvider(OPENCODE_GO)
+    const beforeReload = coll.mergedModels().map(m => m.id)
 
     const second = await import('./lib/index.js?hmr-second')
     await mount(second, makeCtx([]))
-    const sameWrapper = coll.getProvider('opencode-go') === wrapped
+    const sameWrapper = coll.getProvider(OPENCODE_GO) === wrapped
     poll = 1   // the next poll is the one that carries the new descriptor
     tick?.(); await wait(); await wait(); await wait()
-    const afterReload = coll.getModels('opencode-go').map(m => m.id)
+    const afterReload = coll.mergedModels().map(m => m.id)
 
     ok('热重载：provider 未被二次包装（沿用同一 wrapper）', sameWrapper)
     ok('热重载：新实例拉到的新模型进入目录（旧 wrapper 不再读旧闭包）',
@@ -1961,7 +1888,7 @@ freshState()
       { catalog: PI_DEV, roster: LIVE_IDS },
     ])
     s.attach()
-    await wait(); await wait()
+    await wait(); await wait(); await wait(); await wait()
     ok('挂载后 adapter.current 被包装', s.adapter.current !== s.originalCurrent)
     s.dispose()
     ok('卸载后 adapter.current 恢复为原函数', s.adapter.current === s.originalCurrent,
@@ -1995,18 +1922,8 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
-    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const quiet = () => ({
@@ -2020,11 +1937,11 @@ freshState()
     const newMod = await import('./lib/index.js?stale-new')
     phase = 'new'
     await mount(newMod, quiet())
-    const shownByNew = coll.getModels('opencode-go').map(m => m.id).length
+    const shownByNew = coll.mergedModels().map(m => m.id).length
 
     release()
     await wait(); await wait(); await wait()
-    const afterOld = coll.getModels('opencode-go').map(m => m.id)
+    const afterOld = coll.mergedModels().map(m => m.id)
 
     ok('旧实例的请求在新实例之后返回，目录不被它覆盖',
       afterOld.length === shownByNew,
@@ -2036,17 +1953,7 @@ freshState()
 
   // (f) 新实例先挂载、旧实例后卸载：旧实例不得拆掉新实例的补丁
   {
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
     const adapter = { current: () => ({ models: coll }) }
     const originalCurrent = adapter.current
     const adapters = new Map([['opencode-go', { adapter }]])
@@ -2079,22 +1986,22 @@ freshState()
     const firstEnv = makeEnv()
     const first = await import('./lib/index.js?order-old')
     await mount(first, firstEnv.ctx)
-    const overlaid = coll.getModels('opencode-go').map(m => m.id).length
-    const providerAfterMount = coll.getProvider('opencode-go')
+    const overlaid = coll.mergedModels().map(m => m.id).length
+    const providerAfterMount = coll.getProvider(OPENCODE_GO)
 
     const secondEnv = makeEnv()
     const second = await import('./lib/index.js?order-new')
     await mount(second, secondEnv.ctx)
-    const afterMount = coll.getModels('opencode-go').map(m => m.id).length
+    const afterMount = coll.mergedModels().map(m => m.id).length
 
     // The old instance unloads *after* the new one has taken over.
     firstEnv.dispose()
     await wait(); await wait()
-    const afterOldUnload = coll.getModels('opencode-go').map(m => m.id).length
+    const afterOldUnload = coll.mergedModels().map(m => m.id).length
 
     ok('新挂载后旧卸载：旧实例不拆掉新实例的 provider',
-      coll.getProvider('opencode-go') === providerAfterMount,
-      coll.getProvider('opencode-go') === providerAfterMount ? '仍是新实例的 provider' : '★已被还原')
+      coll.getProvider(OPENCODE_GO) === providerAfterMount,
+      coll.getProvider(OPENCODE_GO) === providerAfterMount ? '仍是新实例的 provider' : '★已被还原')
     ok('新挂载后旧卸载：adapter.current 仍被包装',
       adapter.current !== originalCurrent,
       adapter.current === originalCurrent ? '★被旧实例退掉了' : '仍保持包装')
@@ -2105,8 +2012,8 @@ freshState()
     // The current instance must still be able to clean up after itself.
     secondEnv.dispose()
     ok('当前实例卸载时仍能正常还原',
-      adapter.current === originalCurrent && coll.getProvider('opencode-go') === base,
-      `adapter ${adapter.current === originalCurrent ? '已恢复' : '★未恢复'}，provider ${coll.getProvider('opencode-go') === base ? '已恢复' : '★未恢复'}`)
+      adapter.current === originalCurrent && coll.getProvider(OPENCODE_GO) === coll._original,
+      `adapter ${adapter.current === originalCurrent ? '已恢复' : '★未恢复'}，provider ${coll.getProvider(OPENCODE_GO) === coll._original ? '已恢复' : '★未恢复'}`)
   }
 
   // (g) 同数量但丢字段的响应：必须整份回退，不能采纳残缺描述符
@@ -2127,18 +2034,8 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
-    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const warns = []
@@ -2153,7 +2050,7 @@ freshState()
       },
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
-    const models = () => coll.getModels('opencode-go')
+    const models = () => coll.mergedModels()
     const goodCount = models().length
     const before = models().find(m => m.id === probeId)
     poll = 1
@@ -2186,18 +2083,8 @@ freshState()
       }
       throw new Error(`unexpected fetch: ${u}`)
     }
-    const base = {
-      id: 'opencode-go',
-      getModels: () => INSTALLED.slice(),
-      stream: () => {}, streamSimple: () => {},
-    }
-    let current = base
-    const coll = {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
-    const adapters = new Map([['opencode-go', { adapter: { current: () => ({ models: coll }) } }]])
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const quiet = () => ({
@@ -2224,7 +2111,7 @@ freshState()
     const hitsAfterSecond = hits
     release()
     await wait(); await wait(); await wait()
-    const models = coll.getModels('opencode-go').map(m => m.id)
+    const models = coll.mergedModels().map(m => m.id)
 
     ok('同一模块二次 apply 会另起一轮刷新，不复用上一代的 in-flight 请求',
       hitsAfterSecond > secondCount,
@@ -2269,31 +2156,23 @@ freshState()
   // point the wrapper's own `base.streamSimple` at itself, because both entry
   // points forward: that mock recurses instead of dispatching, which is why the
   // shared fixtures leave those two methods throwing "not used".
-  const makeCollection = () => {
-    let current = makeProvider()
-    return {
-      getProvider: id => (id === 'opencode-go' ? current : undefined),
-      setProvider: p => { current = p },
-      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
-    }
-  }
-  const coll = makeCollection()
+  const coll = makeColl('opencode-go', () => INSTALLED.slice(), makeProvider)
   globalThis.setInterval = () => ({ unref() {} })
   freshState()
   const mod = await import('./lib/index.js?dispatch-cache')
   const ctxFor = models => ({
-    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models }) } }]]) },
+    llm: { adapters: collAdapter(coll) },
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, effect: fn => { fn() }, on: () => {},
   })
   await mount(mod, ctxFor(coll))
 
   const options = { sessionId: 'probe-session', maxTokens: 4096 }
-  const call = (method, id) => coll.getProvider('opencode-go')[method]({ id }, {}, options)
+  const call = (method, id) => coll.getProvider(OPENCODE_GO)[method]({ id }, {}, options)
 
   // Read the sets off the merged catalog rather than writing ids down here, so a
   // model Pi adds or retires later moves the assertion with it.
-  const all = coll.getModels('opencode-go').map(m => m.id)
+  const all = coll.mergedModels().map(m => m.id)
   const dsIds = all.filter(id => /^deepseek/i.test(id))
   const restIds = all.filter(id => !/^deepseek/i.test(id))
 
@@ -2315,7 +2194,7 @@ freshState()
     JSON.stringify(call('streamSimple', dsIds[0])))
 
   ok('调用方不传 options 时仍能注入',
-    coll.getProvider('opencode-go').streamSimple({ id: dsIds[0] }, {}, undefined)?.cacheRetention === 'long')
+    coll.getProvider(OPENCODE_GO).streamSimple({ id: dsIds[0] }, {}, undefined)?.cacheRetention === 'long')
 
   ok('stream 与 streamSimple 走同一条策略',
     call('stream', dsIds[0])?.cacheRetention === 'long' && call('stream', restIds[0]) === options,
@@ -2331,10 +2210,12 @@ freshState()
   // the *old* module, so it can only keep working by reading the state slot.
   {
     const seenBefore = seen.length
-    const collB = makeCollection()
+    // The same collection: a second instance taking over the shared state is the
+    // hot-reload path, and a fresh collection would test nothing about the
+    // wrapper the first instance left behind on this one.
     const modB = await import('./lib/index.js?dispatch-cache-reload')
-    await mount(modB, ctxFor(collB))
-    const stillPatched = coll.getProvider('opencode-go')
+    await mount(modB, ctxFor(coll))
+    const stillPatched = coll.getProvider(OPENCODE_GO)
       .streamSimple({ id: dsIds[0] }, {}, options)?.cacheRetention === 'long'
     ok('热重载后旧包装仍按当前策略注入（策略读共享 state，不是旧闭包）',
       stillPatched && seen.length > seenBefore,
@@ -2396,6 +2277,8 @@ freshState()
   freshState()
   const mod = await import('./lib/index.js?session-headers')
   await mount(mod, {
+    // An explicit map: this scenario builds its own `FakeModels` class rather
+    // than a `makeColl` collection, so there is no `_providerId` to derive from.
     llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models }) } }]]) },
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, on: () => {},
@@ -2471,6 +2354,131 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
+// ── 8.9 OpenCode Zen：第二条路由同样被刷新 ────────────────────────────────
+//
+// `opencode` and `opencode-go` are different wire endpoints, so the plugin polls
+// both: Zen's catalog comes from pi.dev under its own provider id and its roster
+// from `/zen/v1/models`, and the fixtures here are what those two endpoints
+// actually answer. The Gemini entries ride pi-ai's own Google transport at the
+// base URL Pi publishes, and Pi's two `type: "classifier"` rows are named and
+// skipped rather than published — they carry no `maxTokens` and have no business
+// in a chat picker.
+{
+  const mainFetch = globalThis.fetch
+  const ZEN_DIRECTORY = fixture('pi-dev-opencode.json')
+  const ZEN_LIVE = fixture('zen-models.json').data
+  const ZEN_CHAT = ZEN_DIRECTORY.filter(m => m.type !== 'classifier')
+  const ZEN_INSTALLED = []
+  for (const models of Object.values(fixture('opencode-0.87.1.json'))) ZEN_INSTALLED.push(...Object.values(models))
+  const ZEN_INSTALLED_IDS = new Set(ZEN_INSTALLED.map(m => m.id))
+  const ZEN_LIVE_IDS = new Set(ZEN_LIVE.map(m => m.id))
+  const OPERABLE_ZEN_PROTOCOLS = new Set([
+    'anthropic-messages', 'openai-completions', 'openai-responses', 'google-generative-ai',
+  ])
+
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.includes('/providers/opencode-go')) {
+      return new Response(JSON.stringify(PI_DEV), { status: 200, headers: { etag: '"go"' } })
+    }
+    if (u.includes('/providers/opencode')) {
+      return new Response(JSON.stringify(ZEN_DIRECTORY), { status: 200, headers: { etag: '"zen"' } })
+    }
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify(liveData), { status: 200 })
+    }
+    if (u.startsWith('https://opencode.ai/zen/v1/models')) {
+      return new Response(JSON.stringify({ data: ZEN_LIVE }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+
+  const goColl = makeColl('opencode-go', () => INSTALLED.slice())
+  const zenColl = makeColl('opencode', () => ZEN_INSTALLED.slice())
+  const zenLogs = []
+  let tick = null
+  globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
+  freshState()
+  const dual = await import('./lib/index.js?dual-scope')
+  await mount(dual, {
+    llm: { adapters: collAdapter(goColl, zenColl) },
+    logger: {
+      info: (...a) => zenLogs.push(['info', a.join(' ')]),
+      warn: (...a) => zenLogs.push(['warn', a.join(' ')]),
+      debug: (...a) => zenLogs.push(['debug', a.join(' ')]),
+    },
+    emit: () => {}, effect: fn => { fn() }, on: () => {},
+  })
+
+  const idsOf = coll => new Set(coll.mergedModels().map(m => m.id))
+  const zenModel = id => zenColl.mergedModels().find(m => m.id === id)
+  const zenIds = idsOf(zenColl)
+  const goIds = idsOf(goColl)
+
+  ok('Zen 路由被刷新：目录不再等于安装时的那份快照',
+    zenIds.size > ZEN_INSTALLED_IDS.size || [...ZEN_LIVE_IDS].some(id => zenIds.has(id) && !ZEN_INSTALLED_IDS.has(id)),
+    `Zen 目录 ${zenIds.size} 个（已安装快照 ${ZEN_INSTALLED_IDS.size} 个）`)
+  ok('Pi 目录为 Zen 发布的每个聊模型都进了目录',
+    ZEN_CHAT.every(m => zenIds.has(m.id)),
+    `${ZEN_CHAT.length} 个中缺 ${ZEN_CHAT.filter(m => !zenIds.has(m.id)).map(m => m.id).join(',') || '无'}`)
+  ok('Zen 实时名单里还在、而已安装快照里也有的模型一个不丢',
+    ZEN_INSTALLED.every(m => !ZEN_LIVE_IDS.has(m.id) || zenIds.has(m.id)),
+    `丢 ${ZEN_INSTALLED.filter(m => ZEN_LIVE_IDS.has(m.id) && !zenIds.has(m.id)).map(m => m.id).join(',') || '无'}`)
+  // Zen-only ids are the ones the Go roster never lists; a Go directory that
+  // carried one would mean the two scopes share a catalog.
+  const ZEN_ONLY = [...ZEN_LIVE_IDS].filter(id => !LIVE_IDS.includes(id))
+  ok('Go 目录既被刷新，也没有混进 Zen 专有的模型',
+    goIds.size > INSTALLED.length && ZEN_ONLY.every(id => !goIds.has(id)),
+    `Go 目录 ${goIds.size} 个，混入的 Zen 专有模型 ${ZEN_ONLY.filter(id => goIds.has(id)).join(',') || '无'}`)
+  const zenClaude = zenModel('claude-opus-5')
+  const zenGemini = zenModel('gemini-3.8-flash')
+  ok('两套协议表各归各的：Claude 走 Anthropic 根、Gemini 走版本路径',
+    zenClaude?.baseUrl === 'https://opencode.ai/zen'
+      && zenClaude?.provider === 'opencode'
+      && zenGemini?.baseUrl === 'https://opencode.ai/zen/v1'
+      && zenGemini?.api === 'google-generative-ai',
+    `Claude ${zenClaude?.baseUrl} / Gemini ${zenGemini?.api} @ ${zenGemini?.baseUrl}`)
+  ok('Zen 目录里每种协议都在本插件的表里（新增协议会导致整份被拒，这里先看见）',
+    ZEN_CHAT.every(m => OPERABLE_ZEN_PROTOCOLS.has(m.api)),
+    [...new Set(ZEN_DIRECTORY.map(m => m.api))].join(', '))
+  ok('分类器条目被点名跳过，不进模型选择器',
+    !zenIds.has('jev-1.13') && !zenIds.has('jev-1.13-free')
+      && ZEN_INSTALLED.every(m => m.id !== 'jev-1.13')
+      && zenLogs.some(([l, m]) => l === 'warn' && m.includes('non-chat')),
+    zenLogs.find(([l, m]) => l === 'warn' && m.includes('non-chat'))?.slice(0, 120) ?? '无告警')
+
+  // Both catalogs were adopted, so both have to be on disk — the payload is one
+  // file keyed by provider id, and a write triggered by one scope must not drop
+  // the other's entry.
+  // The cache scenarios above repoint DSH_PROFILE_DIR at their own directory and
+  // restore it when they finish, so this one reads whichever directory is in
+  // force now rather than the shared sandbox constant.
+  const cacheDirNow = process.env.DSH_PROFILE_DIR ?? CACHE_SANDBOX
+  const { readFile: readCache } = await import('node:fs/promises')
+  let dualPayload = null
+  for (let i = 0; i < 120; i += 1) {
+    try {
+      const parsed = JSON.parse(await readCache(join(cacheDirNow, 'opencode-live-models-catalog.json'), 'utf8'))
+      const hasZen = cachedScope(parsed, 'opencode')
+      const hasGo = cachedScope(parsed, OPENCODE_GO)
+      if (hasZen && hasGo) { dualPayload = parsed; break }
+    } catch { /* not written yet */ }
+    await wait()
+  }
+  ok('两条路由各写各的缓存条目（互不覆盖）',
+    Array.isArray(cachedScope(dualPayload, 'opencode')?.models)
+      && Array.isArray(cachedScope(dualPayload, OPENCODE_GO)?.models)
+      && cachedScope(dualPayload, 'opencode')?.etag === '"zen"'
+      && cachedScope(dualPayload, OPENCODE_GO)?.etag === '"go"',
+    dualPayload
+      ? `zen=${cachedScope(dualPayload, 'opencode')?.models?.length} 条 etag ${cachedScope(dualPayload, 'opencode')?.etag}，`
+        + `go=${cachedScope(dualPayload, OPENCODE_GO)?.models?.length} 条 etag ${cachedScope(dualPayload, OPENCODE_GO)?.etag}`
+      : '文件不存在')
+
+  globalThis.fetch = mainFetch
+  void tick
+}
+
 // ── 9. 继承旧版本状态：缺失字段必须补齐 ────────────────────────────────────
 //
 // Last, on purpose: it swaps the shared slot for a hand-made 0.1.5 state and
@@ -2492,15 +2500,17 @@ freshState()
   await import('./lib/index.js?legacy-fill')
   const filled = globalThis[STATE_KEY]
 
+  const filledScope = filled.scopes?.get('opencode-go')
   ok('继承旧版本状态：缺失的字段被补上',
     filled.cacheWriteTail !== undefined && filled.cacheWriteSeq === 0
-      && filled.catalogEtag === null && filled.lastDriftWarning === null,
+      && filled.scopes instanceof Map && filledScope?.etag === null
+      && filledScope?.lastDriftWarning === null && filledScope?.remoteCatalog instanceof Map,
     `cacheWriteTail=${typeof filled.cacheWriteTail}, cacheWriteSeq=${filled.cacheWriteSeq}, `
-    + `catalogEtag=${filled.catalogEtag}, lastDriftWarning=${filled.lastDriftWarning}`)
+    + `scopes=${filled.scopes instanceof Map ? 'Map' : typeof filled.scopes}, scope.etag=${filledScope?.etag}`)
   ok('补齐不覆盖旧状态里已有的值',
     filled.generation === 4 && filled.warnedCacheWrite === true
       && filled.remoteCatalog === legacy.remoteCatalog && filled.liveModelIds === legacy.liveModelIds,
-    `generation=${filled.generation}, liveModelIds=${filled.liveModelIds?.size ?? filled.liveModelIds}`)
+    `generation=${filled.generation}, 旧顶层字段仍原样保留`)
   // Compared against `legacy`, the object that was put into the slot — not
   // against the slot itself, which `filled` was just read from and which would
   // match a freshly-built copy just as happily.
