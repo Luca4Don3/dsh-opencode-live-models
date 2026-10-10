@@ -2237,6 +2237,113 @@ freshState()
   globalThis.fetch = mainFetch
 }
 
+// ── 8.5 缓存保活：只有 DS 模型拿到 long retention ─────────────────────────
+//
+// `cacheRetention` is the only switch pi-ai exposes for `prompt_cache_key` and
+// `prompt_cache_retention: "24h"`, the two fields that keep the gateway's prefix
+// cache alive past its own ~5-minute window. It is provider-level in pi-ai, so
+// the wrapper is the only place a per-model filter can exist.
+{
+  const mainFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const u = String(url)
+    if (u.startsWith('https://pi.dev/')) return new Response(JSON.stringify(PI_DEV), { status: 200 })
+    if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+      return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+    }
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+
+  // Stand in for the provider's own entry points and echo back what the wrapper
+  // dispatched with. Real pi-ai reads `options.cacheRetention` inside
+  // `resolveCacheRetention`, so this is that seam without pi-ai being present.
+  const seen = []
+  const makeProvider = () => ({
+    id: 'opencode-go',
+    getModels: () => INSTALLED.slice(),
+    stream: (model, context, options) => { seen.push(options); return options },
+    streamSimple: (model, context, options) => { seen.push(options); return options },
+  })
+  // A real swap, as pi-ai's `setProvider` does. The alternative used elsewhere in
+  // this file — an in-place `Object.assign` of the wrapper onto the base — would
+  // point the wrapper's own `base.streamSimple` at itself, because both entry
+  // points forward: that mock recurses instead of dispatching, which is why the
+  // shared fixtures leave those two methods throwing "not used".
+  const makeCollection = () => {
+    let current = makeProvider()
+    return {
+      getProvider: id => (id === 'opencode-go' ? current : undefined),
+      setProvider: p => { current = p },
+      getModels: id => (id === 'opencode-go' ? current.getModels() : []),
+    }
+  }
+  const coll = makeCollection()
+  globalThis.setInterval = () => ({ unref() {} })
+  freshState()
+  const mod = await import('./lib/index.js?dispatch-cache')
+  const ctxFor = models => ({
+    llm: { adapters: new Map([['opencode-go', { adapter: { current: () => ({ models }) } }]]) },
+    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    emit: () => {}, effect: fn => { fn() }, on: () => {},
+  })
+  await mount(mod, ctxFor(coll))
+
+  const options = { sessionId: 'probe-session', maxTokens: 4096 }
+  const call = (method, id) => coll.getProvider('opencode-go')[method]({ id }, {}, options)
+
+  // Read the sets off the merged catalog rather than writing ids down here, so a
+  // model Pi adds or retires later moves the assertion with it.
+  const all = coll.getModels('opencode-go').map(m => m.id)
+  const dsIds = all.filter(id => /^deepseek/i.test(id))
+  const restIds = all.filter(id => !/^deepseek/i.test(id))
+
+  const patched = dsIds.filter(id => call('streamSimple', id)?.cacheRetention === 'long')
+  ok('目录里每个 DeepSeek 模型都拿到 cacheRetention: long',
+    dsIds.length > 0 && patched.length === dsIds.length,
+    `${patched.length}/${dsIds.length}：${dsIds.join(', ')}`)
+
+  // Identity, not deep equality: for a model the policy does not name the very
+  // same object has to come through, so an accidental extra key cannot pass.
+  const untouched = restIds.filter(id => call('streamSimple', id) === options)
+  ok('非 DeepSeek 模型原样透传（同一个 options 对象，未复制未改写）',
+    restIds.length > 0 && untouched.length === restIds.length,
+    `${untouched.length}/${restIds.length} 原样返回`)
+
+  ok('注入不覆盖调用方已有的 options 字段',
+    call('streamSimple', dsIds[0])?.maxTokens === 4096
+      && call('streamSimple', dsIds[0])?.sessionId === 'probe-session',
+    JSON.stringify(call('streamSimple', dsIds[0])))
+
+  ok('调用方不传 options 时仍能注入',
+    coll.getProvider('opencode-go').streamSimple({ id: dsIds[0] }, {}, undefined)?.cacheRetention === 'long')
+
+  ok('stream 与 streamSimple 走同一条策略',
+    call('stream', dsIds[0])?.cacheRetention === 'long' && call('stream', restIds[0]) === options,
+    `${dsIds[0]} 注入 / ${restIds[0]} 原样`)
+
+  ok('dispatchPatch 对非对象入参不抛错',
+    mod.dispatchPatch(null) === null && mod.dispatchPatch(undefined) === null
+      && mod.dispatchPatch('deepseek-v4-pro') === null,
+    'null / undefined / 字符串都返回 null')
+
+  // A second instance takes over the shared state while the first wrapper is
+  // still installed — the hot-reload path. The wrapper left behind closes over
+  // the *old* module, so it can only keep working by reading the state slot.
+  {
+    const seenBefore = seen.length
+    const collB = makeCollection()
+    const modB = await import('./lib/index.js?dispatch-cache-reload')
+    await mount(modB, ctxFor(collB))
+    const stillPatched = coll.getProvider('opencode-go')
+      .streamSimple({ id: dsIds[0] }, {}, options)?.cacheRetention === 'long'
+    ok('热重载后旧包装仍按当前策略注入（策略读共享 state，不是旧闭包）',
+      stillPatched && seen.length > seenBefore,
+      stillPatched ? '旧 provider 仍注入 long' : '★旧包装静默失效')
+  }
+
+  globalThis.fetch = mainFetch
+}
+
 // ── 9. 继承旧版本状态：缺失字段必须补齐 ────────────────────────────────────
 //
 // Last, on purpose: it swaps the shared slot for a hand-made 0.1.5 state and

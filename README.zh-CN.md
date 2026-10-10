@@ -33,7 +33,9 @@ dsh plugin --profile desktop add github:Luca4Don3/dsh-opencode-live-models
 
 Pi 自己的条目豁免这项检查：Pi 仍在发布、而 OCG 已经下线的模型会留在选择器里，直到 Pi 也移除它。跟随 Pi 的节奏是本插件的约定；把网关的缺口当成下线，退掉的恰恰是 Pi 领先的那批 id。
 
-插件更新 pi-ai 中 `opencode-go` 的模型列表。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
+插件更新 pi-ai 中 `opencode-go` 的模型列表，并在请求经过时合并一个选项：DeepSeek 模型拿到 `cacheRetention: 'long'`。请求仍由已安装的 pi-ai 处理，包括传输和鉴权。
+
+**为什么是这个选项。** `cacheRetention` 是 DSH 暴露的、唯一能左右网关前缀缓存存活的两个线上字段的开关——`prompt_cache_key` 与 `prompt_cache_retention: "24h"`。pi-ai 默认取 `"short"`，这两个字段一个都不发，于是每轮只能靠网关自己大约五分钟的自动窗口命中；而 DeepSeek 官方端点的磁盘缓存可以存活数小时到数天。同一个会话走 `opencode-go` 的命中率低于走官方 API，原因就在这里。该设置在 pi-ai 里是**提供方级**字段、没有按模型的形态，放任不管会波及这条路由上的每一个模型；本插件点名的是匹配 `/^deepseek/i` 的那些。`kimi-k2.6` 是上游唯一一个已经通过 `compat.supportsLongCacheRetention` 主动退出的模型，而这条路由上没有任何模型声明 `cacheControlFormat`，所以匹配到的 id 正好就是行为会变的那些。叠加层的 `stream` / `streamSimple` 带着这个选项转发给原 provider，传输、鉴权与提供方级标头都不受影响。
 
 两个数据源并行获取，且都不被允许"缩小"目录：空、格式错误或明显小于上一轮正常值的响应会被拒绝而不是采纳，因此一次坏响应无法悄悄清空选择器。
 
@@ -85,6 +87,7 @@ OCG_FIXTURES=/path/to/fixtures npm test
 
 - 没有描述符的模型不会出现在选择器中。
 - 两个端点、5 分钟轮询间隔和缓存有效期都固定在源码里。其中网关 base URL **是刻意固定的**——远端目录只决定有哪些模型，绝不决定请求发去哪里——所以要指向别的网关就得改 `lib/index.js`。
+- long 缓存保活写死在 `lib/index.js`，只匹配 `/^deepseek/i` 的模型 id。这条路由上其余模型保持 pi-ai 的默认值，且没有配置开关——想换一组就改那里的正则。
 - 插件依赖 `llm-pi-ai` 的内部接口。如果 DSH 更新后接口发生变化，插件会记录警告并保留原有目录。
 
 ## 许可证
