@@ -1604,6 +1604,11 @@ freshState()
     ok('两个上游并行请求（总耗时 ≈ 单个延迟，而非两倍）',
       elapsed < DELAY * 1.8,
       `${DELAY}ms × 2 串行需 ≈${DELAY * 2}ms，实际 ${elapsed}ms`)
+    // `mount` waits a fixed 300ms and the mocked round trip takes as long as
+    // `DELAY`, so the two race: on a slow runner the refresh lands just after
+    // `scripted` returns. Wait for the catalog rather than for the clock, and
+    // keep the assertion strict — a refresh that never lands still fails it.
+    for (let i = 0; i < 10 && s.snap().length !== EXPECTED_UNION_SIZE; i += 1) await wait()
     ok('并行取数后目录仍正确', s.snap().length === EXPECTED_UNION_SIZE, `${s.snap().length} 个模型（应为 ${EXPECTED_UNION_SIZE}）`)
   }
 
