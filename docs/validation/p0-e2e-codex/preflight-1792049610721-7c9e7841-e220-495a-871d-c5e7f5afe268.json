@@ -1,0 +1,14 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "preflight",
+  "endedAt": "2026-10-15T07:33:30.720Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "failure": {
+    "name": "Error",
+    "code": "ERR_MODULE_NOT_FOUND"
+  }
+}

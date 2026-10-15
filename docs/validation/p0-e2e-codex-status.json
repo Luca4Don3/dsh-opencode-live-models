@@ -1,0 +1,61 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "updatedAt": "2026-10-15T07:56:52.562Z",
+  "gates": {
+    "P0_CODEX": "PARTIAL_E05_BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "cases": {
+    "E01": "PASS",
+    "E02": "PASS",
+    "E03": "PASS",
+    "E04": "PASS",
+    "E05": "BLOCKED_EXTERNAL_QUOTA",
+    "E06": "PASS",
+    "E07": "PASS",
+    "E08": "PASS_ISOLATED_PROFILE",
+    "E09": "PASS",
+    "E10": "PASS"
+  },
+  "e05Evidence": {
+    "modelTests": [
+      {
+        "model": "gpt-5.5",
+        "status": 400,
+        "detail": "model-not-supported-for-chatgpt-account"
+      },
+      {
+        "model": "gpt-5.3-codex-spark",
+        "status": 400,
+        "detail": "model-not-supported-for-chatgpt-account"
+      },
+      {
+        "model": "gpt-5.6-sol",
+        "status": 429,
+        "detail": "usage-limit-reached"
+      },
+      {
+        "model": "gpt-6-sol",
+        "status": 429,
+        "detail": "usage-limit-reached"
+      }
+    ],
+    "retryAfterWindowReset": true
+  },
+  "networkDiagnosis": {
+    "direct": {
+      "status": 403,
+      "errorCode": "unsupported_country_region_territory"
+    },
+    "proxy": {
+      "status": 400,
+      "errorCode": "missing_required_parameter"
+    }
+  },
+  "evidenceArchived": 16,
+  "hostModified": false,
+  "productionPluginModified": false,
+  "dependenciesChanged": false,
+  "userCredentialsTouched": false
+}

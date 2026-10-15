@@ -1,0 +1,32 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "network-preflight",
+  "startedAt": "2026-10-15T07:42:03.136Z",
+  "gates": {
+    "P0_CODEX": "PENDING",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "transport": "sse"
+  },
+  "evidence": [
+    {
+      "id": "NETWORK_PREFLIGHT",
+      "status": "PASS",
+      "httpStatus": 400,
+      "contentType": "application/json",
+      "errorCode": "missing_required_parameter",
+      "cloudflareChallenge": false,
+      "proxyConfigured": true,
+      "noAuthenticationMaterialSent": true
+    }
+  ],
+  "network": []
+}

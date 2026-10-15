@@ -1,0 +1,283 @@
+{
+  "mode": "REAL_BUNDLED_SERVICES_ISOLATED_CORDIS_MOCK_HTTP",
+  "timestamp": "2026-10-15T07:12:23.796Z",
+  "runtime": {
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "moduleRoot": "file:///Applications/DeepSeek%20Harness.app/Contents/Resources/app.asar/dsh/node_modules",
+  "syntheticDirectory": ".temp/p0/public-services-yqN6AM",
+  "userCredentialReads": 0,
+  "userCredentialWrites": 0,
+  "realNetworkRequests": 0,
+  "syntheticDiskWrites": true,
+  "actualServices": true,
+  "loaderComposition": false,
+  "crossProcess": false,
+  "realDshRestart": false,
+  "realBrowserUi": false,
+  "realOAuthAuthorization": false,
+  "contextCountAfterCleanup": 0,
+  "fetchRestored": true,
+  "tests": [
+    {
+      "id": "S01-real-store-roundtrip-and-owner-only-file",
+      "status": "PASS",
+      "evidence": {
+        "realStore": true,
+        "filePermissions": "0600",
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S02-service-recreation-restores-durable-record",
+      "status": "PASS",
+      "evidence": {
+        "serviceRecreated": true,
+        "realDshRestart": false,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S03-undefined-keeps-record-and-does-not-notify",
+      "status": "PASS",
+      "evidence": {
+        "undefinedMeans": "retain",
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S04-invalid-payload-does-not-change-disk",
+      "status": "PASS",
+      "evidence": {
+        "invalidJsonRejected": true,
+        "diskUnchanged": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S05-delete-only-target-synthetic-record",
+      "status": "PASS",
+      "evidence": {
+        "unrelatedRecordPreserved": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S06-one-real-store-concurrent-modify-is-serialized",
+      "status": "PASS",
+      "evidence": {
+        "concurrentModifications": 12,
+        "finalCounter": 12,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S07-two-real-stores-share-actual-file-lock",
+      "status": "PASS",
+      "evidence": {
+        "independentServices": 2,
+        "actualFileLock": true,
+        "finalCounter": 12,
+        "crossProcess": false,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S08-service-dispose-unregisters-and-refuses-new-writes",
+      "status": "PASS",
+      "evidence": {
+        "serviceWithdrawn": true,
+        "postDisposeWritesRejected": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S09-fiber-disposal-removes-owned-listeners",
+      "status": "PASS",
+      "evidence": {
+        "ownedListenerRemoved": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S10-native-codex-reads-real-store-at-http-boundary",
+      "status": "PASS",
+      "evidence": {
+        "realStoreToNativeAdapter": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "S11-native-refresh-writes-real-store-before-http",
+      "status": "PASS",
+      "evidence": {
+        "rotatedSyntheticGrantPersisted": true,
+        "realTokenEndpoint": false,
+        "loginRequests": 0,
+        "refreshRequests": 1,
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "S20-two-native-adapters-deduplicate-refresh-with-real-file-lock",
+      "status": "PASS",
+      "evidence": {
+        "independentAdapters": 2,
+        "actualFileLock": true,
+        "refreshCount": 1,
+        "crossProcess": false,
+        "loginRequests": 0,
+        "refreshRequests": 1,
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          },
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "S12-openai-real-store-still-cannot-consume-oauth",
+      "status": "PASS",
+      "evidence": {
+        "openaiOAuthUnsupported": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S13-public-authorization-commits-own-real-record",
+      "status": "PASS",
+      "evidence": {
+        "ownKeyCommitObserved": true,
+        "flowRemovedOnFiberDispose": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S14-other-key-write-cannot-bypass-flow-commit-check",
+      "status": "PASS",
+      "evidence": {
+        "differentKeyRejected": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S15-duplicate-flow-is-rejected-without-replacing-owner",
+      "status": "PASS",
+      "evidence": {
+        "duplicateRejected": true,
+        "originalOwnerPreserved": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S16-flow-fiber-dispose-cancels-pending-attempt",
+      "status": "PASS",
+      "evidence": {
+        "pendingAttemptCancelled": true,
+        "noCredentialCommitted": true,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S17-native-codex-mock-login-disk-handoff-and-http",
+      "status": "PASS",
+      "evidence": {
+        "nativeModelsLoginUsed": true,
+        "realDiskHandoff": true,
+        "authorizationServer": "mock",
+        "realOAuthAuthorization": false,
+        "loginRequests": 3,
+        "refreshRequests": 0,
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "S18-slotcore-declarations-and-recursive-disposal",
+      "status": "PASS",
+      "evidence": {
+        "recursiveDisposal": true,
+        "idempotentDisposers": true,
+        "realReactUi": false,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    },
+    {
+      "id": "S19-slotcore-explicit-unsubscribe-stops-observation",
+      "status": "PASS",
+      "evidence": {
+        "explicitSubscriptionRemoved": true,
+        "realClientHmr": false,
+        "loginRequests": 0,
+        "refreshRequests": 0,
+        "modelRequests": []
+      }
+    }
+  ],
+  "passed": 20,
+  "failed": 0
+}
