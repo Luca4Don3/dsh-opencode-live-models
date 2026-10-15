@@ -1,6 +1,6 @@
 {
   "stage": "P0-Q",
-  "updatedAt": "2026-10-15T11:02:12.064Z",
+  "updatedAt": "2026-10-15T11:28:35.161Z",
   "gates": {
     "P0_Q": "PASS",
     "P0_CODEX": "AUTH_AND_QUOTA_SCENE_PASS_NORMAL_COMPLETION_NOT_TESTED",
@@ -99,5 +99,16 @@
     "P0_Q": "PASS",
     "P1": "NOT_STARTED",
     "note": "P0-Q 通过后方可进入额度引擎开发"
+  },
+  "identity": {
+    "accountKeyDefect": "acct_e3b0c44298 is sha256 of empty string; server account_id was empty",
+    "rule": "non-empty verified id only; else identity-unverified; no empty-hash cache keys",
+    "historicalEvidenceUnchanged": true
+  },
+  "regression": {
+    "fixtures": 4,
+    "testFile": "docs/validation/quota-parse.test.mjs",
+    "assertions": 12,
+    "result": "ALL_PASS"
   }
 }

@@ -286,7 +286,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 | E07 Token 刷新 | PASS | 以公开 `minOAuthValidityMs` 触发（未改存储过期时间）：refresh 端点 **200**、凭据旋转、记录仍为 OAuth、刷新后凭据直接用于后续请求 |
 | E08 重启恢复 | PASS（隔离 profile 范围） | 多个**全新 DSH 进程**从磁盘恢复同一 grant 并发起请求；`desktopRestarted=false`，未重启正式 Desktop |
 | E09 多进程并发 | PASS | 两独立 DSH 进程同秒触发刷新：仅 1 次真实 refresh POST，另一进程经文件锁二次检查复用已旋转凭据；无重复刷新、无覆盖损坏、无跨账号 |
-| E10 插件生命周期 | PASS | 验证进程全部退出：无残留 `dsh --profile codex-e2e` 进程、1455 回调端口空；正式插件运行文件（lib/、probe.mjs、package.json、cordis.patch.yml）零 diff；参考仓库干净；宿主 asar SHA 与第 2 节一致 |
+| E10 进程清理与零宿主影响（限定范围 PASS） | PASS（限定范围） | 验证进程全部退出：无残留 `dsh --profile codex-e2e` 进程、1455 回调端口空；正式插件运行文件（lib/、probe.mjs、package.json、cordis.patch.yml）零 diff；参考仓库干净；宿主 asar SHA 与第 2 节一致。**这不等同于真实插件的安装/禁用/卸载/HMR 验收，后者仍属第 3 章 P0-10 的 BLOCKED 项** |
 
 ### 12.3 期间暴露的真实事实
 
@@ -384,7 +384,7 @@ P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi
 | 编号 | 验收项 | 结果 | 依据 |
 |---|---|---|---|
 | Q01-01 | 凭据读取（复用已有 OAuth，不重新登录） | PASS | login-call 后的独立 `query` 动作用已存凭据（无登录动作）取得 200 |
-| Q01-02 | 账号一致性 | PASS | 查询与请求模型同一 grant（accountKey 哈希一致），未跨账号 |
+| Q01-02 | 账号一致性 | PASS（依据修正） | 查询与请求模型使用**同一 grant（同进程同凭据记录）**，未跨账号。注：服务端 account_id 返回空字符串，早期证据中的 `acct_e3b0c44298` 系空串哈希、**无效**；账号键规则见 14.12 |
 | Q01-03 | 额度数据解析 | PASS | exhausted、primary 100%、secondary 16%、resetCredits 1 |
 | Q01-04 | 时间窗口识别 | PASS | primary=300 分钟、secondary=10080 分钟，以服务端字段为准 |
 | Q01-05 | 重置时间 | PASS | resetsAt 直接取服务端（1792064732/1792651532），无推算 |
@@ -423,3 +423,14 @@ P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi
 ### 14.11 参考对照文档
 
 三项目固定提交与职责边界、OAuth/额度对照、结构差异与认证要求见 [docs/p0-q-reference-map.md](<<server_path>/Workspace/dsh-opencode-live-models/docs/p0-q-reference-map.md>)。
+
+### 14.12 账号身份键规则与解析回归测试（问题修正）
+
+**账号键缺陷（2026-10-15 复核发现，P0 优先级）**：两份成功查询证据中的 `accountKey=acct_e3b0c44298` 是空字符串的 SHA-256 前缀——`wham/usage` 的 `account_id` 实际返回**空字符串**，早期校验只判断 `typeof === 'string'`，导致空值哈希被当作有效账号键。若沿用，多账号将共用同一缓存键造成串号。规则已固化为：
+
+1. 仅非空且去空白后的账号标识可生成账号键（稳定哈希）。
+2. 缺失/空账号标识一律输出 `identity-unverified`，**禁止空哈希充当账号键**。
+3. 多账号缓存键必须在账号键验证通过后建立；开发多账号功能前需补两账号隔离测试。
+4. 历史证据 JSON 保留原值（不篡改原始输出），以本节为准。
+
+**解析回归测试（问题 B）**：真实响应结构已固化为脱敏 Fixture（`docs/validation/fixtures/`：Codex 耗尽/充足/缺窗口、OpenCode Go），配套纯函数测试 `docs/validation/quota-parse.test.mjs`（无网络、无凭据、无 DSH），**12/12 PASS**，覆盖：`allowed=false` 保留、主窗口 100% 判 exhausted、次窗口 16% 保留 84% 剩余、缺窗口判 unknown、裸 429 不产生百分比、Credits 与窗口不混算、空账号键 identity-unverified、Go 三窗口与 windowMinutes 钉死、Go rate-limited 窗口保留百分比。运行命令：`node docs/validation/quota-parse.test.mjs`。该测试作为未来 dsh-subscription-usage 解析器的种子与 CI 门禁基线。
