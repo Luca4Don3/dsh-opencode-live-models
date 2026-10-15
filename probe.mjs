@@ -93,6 +93,20 @@ function freshState() {
   rmSync(join(CACHE_SANDBOX, 'opencode-live-models-catalog.json'), { force: true })
 }
 
+/**
+ * freshState() for scenes that assert exact publish counts: let the previous
+ * scene's in-flight cache write finish first, so its late disk write cannot
+ * race this scene's rm and come back as a phantom restored publish — the
+ * shared cache sandbox makes that race read as exactly one extra emit
+ * (intermittent on slower runners, observed once on CI Node 18).
+ * @returns {Promise<void>} resolves once prior state and disk cache are clear.
+ */
+async function freshStateAsync() {
+  const previous = globalThis[STATE_KEY]
+  try { await previous?.cacheWriteTail } catch { /* a failed prior write only delays us */ }
+  freshState();
+}
+
 // 真实数据
 const liveData = fixture('ocg-models.json')
 const OCG_LIVE = liveData.data
@@ -320,7 +334,7 @@ const ids = () => merged().map(m => m.id).sort()
     }
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?gate-${label}`)
     await mount(mod, {
       llm: { adapters: collAdapter(coll) },
@@ -402,7 +416,7 @@ const ids = () => merged().map(m => m.id).sort()
     }
     const coll = makeColl('opencode-go', () => INSTALLED.slice())
     globalThis.setInterval = () => ({ unref() {} })
-    freshState()
+    await freshStateAsync()
     const mod = await import('./lib/index.js?no-bundled-descriptors')
     await mount(mod, {
       llm: { adapters: collAdapter(coll) },
@@ -621,7 +635,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     },
     emit: ev => pLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
-    freshState()
+    await freshStateAsync()
   const priced = await import('./lib/index.js?repriced')
   await mount(priced, pCtx)
   const emittedAfterBoot = pLogs.filter(([l]) => l === 'emit').length
@@ -679,7 +693,9 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     },
     emit: ev => oLogs.push(['emit', ev]), effect: fn => fn(), on: () => {},
   }
-    freshState()
+    await freshStateAsync()
+  ok('计数场景挂载前磁盘缓存已清（写回竞争防护生效）',
+    !existsSync(join(CACHE_SANDBOX, 'opencode-live-models-catalog.json')))
   const ordered = await import('./lib/index.js?reordered')
   await mount(ordered, oCtx)
   const boot = oLogs.filter(([l]) => l === 'emit').length
@@ -736,7 +752,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const events = []
-  freshState()
+  await freshStateAsync()
   const mod = await import('./lib/index.js?no-block')
   mod.apply({
     llm: { adapters },
@@ -792,7 +808,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
   const logs = []
-  freshState()
+  await freshStateAsync()
   const mod = await import('./lib/index.js?etag')
   await mount(mod, {
     llm: { adapters },
@@ -853,7 +869,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     const adapters = collAdapter(coll)
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?persist-${label}`)
     await mount(mod, {
       llm: { adapters },
@@ -964,7 +980,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     const adapters = new Map()
     let onEvt = null
     globalThis.fetch = withEtag
-    freshState()
+    await freshStateAsync()
     const deferred = await import('./lib/index.js?deferred-cache')
     await mount(deferred, {
       llm: { adapters },
@@ -1032,7 +1048,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       emit: () => {}, effect: fn => { fn() }, on: () => {},
     })
 
-    freshState()
+    await freshStateAsync()
     which = 0
     const modA = await import('./lib/index.js?pair-a')
     await mount(modA, ctxFor(new Map([['opencode-go', { adapter: { current: () => ({ models: collA }) } }]])))
@@ -1145,7 +1161,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
@@ -1222,7 +1238,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     const coll = makeColl('opencode-go', () => INSTALLED.slice())
     const warns = []
     const debugs = []
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?envelope-${label}`)
     await mount(mod, {
       llm: { adapters: collAdapter(coll) },
@@ -1294,7 +1310,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
-    freshState()
+    await freshStateAsync()
   const hostile = await import('./lib/index.js?hostile')
   await mount(hostile, hCtx)
   const got = coll.mergedModels()
@@ -1364,7 +1380,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
     },
     emit: () => {}, effect: fn => fn(), on: () => {},
   }
-    freshState()
+    await freshStateAsync()
   const mixed = await import('./lib/index.js?mixed')
   await mount(mixed, mCtx)
   tick?.(); await wait(); await wait()
@@ -1412,7 +1428,7 @@ ok('Space Bunny 进入目录', ids().includes('space-bunny'))
   }
   // The query makes ESM load a *fresh* instance, so its module-level
   // remoteCatalog starts empty — the state of a first boot with no network.
-freshState()
+await freshStateAsync()
   const fresh = await import('./lib/index.js?firstboot')
   await mount(fresh, ctx2)
   const order2 = collection2.mergedModels().map(m => m.id)
@@ -1471,7 +1487,7 @@ freshState()
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     return {
@@ -1609,7 +1625,7 @@ freshState()
       },
       emit: () => {}, effect: fn => fn(), on: () => {},
     }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, cCtx)
     return {
@@ -1700,7 +1716,7 @@ freshState()
         listeners.get(ev).push(fn)
       },
     }
-    freshState()
+    await freshStateAsync()
     const mod = await import(`./lib/index.js?${label}`)
     await mount(mod, sCtx)
     const adapter = { current: () => ({ models: coll }) }
@@ -2039,7 +2055,7 @@ freshState()
     let tick = null
     globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
     const warns = []
-    freshState()
+    await freshStateAsync()
     const mod = await import('./lib/index.js?stripped')
     await mount(mod, {
       llm: { adapters },
@@ -2090,7 +2106,7 @@ freshState()
     globalThis.setInterval = () => ({ unref() {} })
     const disposers = []
     const sLogs = []
-    freshState()
+    await freshStateAsync()
     const mod = await import('./lib/index.js?abort-inflight')
     await mount(mod, {
       llm: { adapters },
@@ -2154,7 +2170,7 @@ freshState()
     const sLogs = []
     const listeners = new Map()
     const disposers = []
-    freshState()
+    await freshStateAsync()
     const mod = await import('./lib/index.js?interleave')
     await mount(mod, {
       llm: { adapters },
@@ -2231,7 +2247,7 @@ freshState()
     const adaptersA = new Map()
     adaptersA.set('opencode-go', { adapter: { current: () => ({ models: goColl }) } })
     a.ctx.llm.adapters = adaptersA
-    freshState()
+    await freshStateAsync()
     const modA = await import('./lib/index.js?genA')
     await mount(modA, a.ctx)
     // Emit once to create A's pass deterministically (the automatic pass waits on
@@ -2302,7 +2318,7 @@ freshState()
         return off
       },
     }
-    freshState()
+    await freshStateAsync()
     const mod = await import('./lib/index.js?disabled-semantics')
     await mount(mod, ctxL)
     for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('x')
@@ -2345,7 +2361,7 @@ freshState()
       emit: () => {}, effect: () => {}, on: () => {},
     })
 
-    freshState()
+    await freshStateAsync()
     // One module object, two mounts — no freshState(), same instance this time.
     const mod = await import('./lib/index.js?same-module-twice')
     mod.apply(quiet())
@@ -2410,7 +2426,7 @@ freshState()
   // shared fixtures leave those two methods throwing "not used".
   const coll = makeColl('opencode-go', () => INSTALLED.slice(), makeProvider)
   globalThis.setInterval = () => ({ unref() {} })
-  freshState()
+  await freshStateAsync()
   const mod = await import('./lib/index.js?dispatch-cache')
   const ctxFor = models => ({
     llm: { adapters: collAdapter(coll) },
@@ -2526,7 +2542,7 @@ freshState()
   const originalStreamSimple = FakeModels.prototype.streamSimple
   const disposers = []
   globalThis.setInterval = () => ({ unref() {} })
-  freshState()
+  await freshStateAsync()
   const mod = await import('./lib/index.js?session-headers')
   await mount(mod, {
     // An explicit map: this scenario builds its own `FakeModels` class rather
@@ -2650,7 +2666,7 @@ freshState()
   const zenLogs = []
   let tick = null
   globalThis.setInterval = fn => { tick = fn; return { unref() {} } }
-  freshState()
+  await freshStateAsync()
   const dual = await import('./lib/index.js?dual-scope')
   await mount(dual, {
     llm: { adapters: collAdapter(goColl, zenColl) },
