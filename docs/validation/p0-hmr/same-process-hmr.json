@@ -53,5 +53,17 @@
     "real browser/HMR UI surfaces"
   ],
   "hostModified": false,
-  "productionCodeChanged": false
+  "productionCodeChanged": false,
+  "reproduction": {
+    "files": [
+      "p0-watch-observer.mjs",
+      "driver.sh",
+      "profile-enabled.yml",
+      "profile-disabled.yml",
+      "run.log",
+      "driver.log"
+    ],
+    "steps": "scaffold isolated profile (bundles: plugin + watch observer; insert llm/llm-pi-ai/timer/hmr root:[]), run driver.sh which backgrounds launch.sh, switches the profile patch enabled->disabled->enabled, then SIGINTs the single process; adjust RUN_DIR before reuse",
+    "rawLogs": "run.log and driver.log are force-added evidence (repo *.log ignore bypassed)"
+  }
 }

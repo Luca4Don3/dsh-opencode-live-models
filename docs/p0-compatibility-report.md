@@ -54,7 +54,7 @@
 | P0-07 实际请求认证 | INCOMPATIBLE（openai）；真实 E2E BLOCKED | T 系列请求边界验证；S10/S11/S17 在真实服务组合中确认 Codex 账号/凭据来源 | 所有 HTTP 均为 mock，服务端未接受任何测试请求 |
 | P0-08 刷新 | BLOCKED（真实账号/多进程） | S11：模拟旋转后的 grant 真正落盘并重载；S20：两套原生 adapter 通过真实文件锁只刷新一次 | 同进程两实例不等于多进程；真实 Token 与 DSH 重启未测 |
 | P0-09 插件 UI/额度入口 | BLOCKED（浏览器集成未测） | Models 两个 Slot 和 settings.section 声明存在；S18/S19 验证纯 SlotCore 声明/撤销/订阅 | 未安装 client bundle，未在现有 GUI 渲染或发起额度请求 |
-| P0-10 生命周期 | BLOCKED（大幅收敛） | S08/S09/S13/S16、S18/S19；**15 章真实 Loader 三轮 PASS**；**16 章同进程 disabled/重装/配置 HMR PASS（单进程 84/34 → 73/30 → 84/34）**；probe 竞态 (c2)(e)(f)(h)(i)(j)；abort 与刷新竞态修复均已合并 main | 剩余：源码级 HMR、React/UI 层、进行中额度查询取消 |
+| P0-10 生命周期 | BLOCKED（大幅收敛） | S08/S09/S13/S16、S18/S19；**15 章真实 Loader 三轮 PASS**；**16 章同进程 disabled/重装/配置 HMR PASS（单进程 84/34 → 73/30 → 84/34）**；probe 竞态 (c2)(e)(f)(h)(i)(j)(k)；abort 与刷新竞态修复均已合并 main（PR #4 `2d512c6` / PR #5 `58b33eb`） | 剩余：源码级 HMR、React/UI 层、进行中额度查询取消 |
 
 ## 4. P0-02：当前 OpenAI 不支持 OAuth 的直接证据
 
@@ -470,7 +470,9 @@ providers 在三轮中均为 `[opencode, opencode-go]`，观察器退出正常�
 | 同一模块二次 apply 吞首轮刷新 | probe (h) | PASS（main 既有） |
 | 卸载后在途结果不回写 | probe (d) | PASS（main 既有） |
 | 旧实例晚归结果不覆盖新实例 | probe (e) | PASS（main 既有） |
-| 卸载时主动 abort 在途 fetch | probe (i)（**PR #4 分支 `feat/abort-inflight-requests`**） | PASS（176/176），待合入 main |
+| 卸载时主动 abort 在途 fetch | probe (i) | PASS（176/176），已随 PR #4 合入 main（`2d512c6`） |
+| 在途刷新期间新注册 scope 不被 join 吞掉 | probe (j)（含 Zen roster 与发布断言） | PASS（184/184），已随 PR #5 合入（`58b33eb`） |
+| 跨代接管后旧实例补查回调不发起刷新 | probe (k)（确定性：join 绑定在途 pass 前置断言） | PASS（184/184），已随 PR #5 合入（`58b33eb`）；修复为 join 时捕获 generation 并与共享 `state.generation` 比对 |
 
 probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader 实测共同构成本轮生命周期证据；HMR/watch 场景仍属未测。
 ## 16. P0-10 补测二：同进程禁用与配置 HMR
@@ -517,7 +519,7 @@ probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader �
 | P0-07 请求认证 | Codex 认证链 PASS（真实 429 互证）/ openai INCOMPATIBLE；真实 200 NOT TESTED | 12/14 |
 | P0-08 刷新 | PASS（真实刷新 + 双进程去重） | 12 E07/E09、7.1 S11/S20 |
 | P0-09 UI/额度入口 | BLOCKED（浏览器集成未测；Slots 已核对） | 7.1 S18/S19 |
-| P0-10 生命周期 | **BLOCKED（大幅收敛）**：真实 Loader 三轮 15 章、同进程 disabled/HMR 16 章、probe 竞态 (c2)(e)(f)(h)(i)(j)、abort 修复已合并；剩 React/UI、源码级 HMR、进行中额度请求取消 | 15/16 |
+| P0-10 生命周期 | **BLOCKED（大幅收敛）**：真实 Loader 三轮 15 章、同进程 disabled/HMR 16 章、probe 竞态 (c2)(e)(f)(h)(i)(j)(k)、abort 与跨代补查修复已合入（PR #4 `2d512c6` / PR #5 `58b33eb`）；剩 React/UI、源码级 HMR、进行中额度请求取消 | 15/16 |
 
 ### 17.3 P0 总门禁仍 BLOCKED 的具体原因
 
