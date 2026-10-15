@@ -1,0 +1,69 @@
+{
+  "stage": "P0-10",
+  "kind": "same-process-disabled-and-hmr",
+  "updatedAt": "2026-10-15T17:34:56.795Z",
+  "processPid": 80214,
+  "singleProcess": true,
+  "hmrEnabled": true,
+  "hmrConfig": "insert id:hmr name:@deepseek-ai/dsh-hmr root:[] plus required timer entry",
+  "timeline": [
+    {
+      "seq": 1,
+      "at": "2026-10-15T17:33:24.867Z",
+      "opencode": 73,
+      "opencode-go": 30,
+      "phase": "startup-baseline"
+    },
+    {
+      "seq": 2,
+      "at": "2026-10-15T17:33:26.873Z",
+      "opencode": 84,
+      "opencode-go": 34,
+      "phase": "plugin-overlaid"
+    },
+    {
+      "seq": 3,
+      "at": "2026-10-15T17:33:42.905Z",
+      "opencode": 73,
+      "opencode-go": 30,
+      "phase": "disabled-in-process",
+      "patchAt": "01:33:40",
+      "latencySec": 3
+    },
+    {
+      "seq": 4,
+      "at": "2026-10-15T17:33:59.935Z",
+      "opencode": 84,
+      "opencode-go": 34,
+      "phase": "re-enabled-in-process",
+      "patchAt": "01:33:56",
+      "latencySec": 4
+    }
+  ],
+  "gracefulShutdown": {
+    "signal": "SIGINT",
+    "completed": true
+  },
+  "startupFailures": 0,
+  "conclusion": "one live DSH process disabled then re-enabled the plugin; overlay removed and restored in place (unpatch verified by count fallback); configuration HMR works",
+  "notCovered": [
+    "source-module HMR (root: [] excludes code watching)",
+    "React/UI layer",
+    "in-flight usage-request cancellation",
+    "real browser/HMR UI surfaces"
+  ],
+  "hostModified": false,
+  "productionCodeChanged": false,
+  "reproduction": {
+    "files": [
+      "p0-watch-observer.mjs",
+      "driver.sh",
+      "profile-enabled.yml",
+      "profile-disabled.yml",
+      "run.log",
+      "driver.log"
+    ],
+    "steps": "scaffold isolated profile (bundles: plugin + watch observer; insert llm/llm-pi-ai/timer/hmr root:[]), run driver.sh which backgrounds launch.sh, switches the profile patch enabled->disabled->enabled, then SIGINTs the single process; adjust RUN_DIR before reuse",
+    "rawLogs": "run.log and driver.log are force-added evidence (repo *.log ignore bypassed)"
+  }
+}
