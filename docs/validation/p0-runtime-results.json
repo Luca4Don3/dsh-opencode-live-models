@@ -1,0 +1,267 @@
+{
+  "mode": "OFFLINE_MOCK_HTTP_BOUNDARY",
+  "timestamp": "2026-10-15T06:56:17.291Z",
+  "runtime": {
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "moduleRoot": "file:///Applications/DeepSeek%20Harness.app/Contents/Resources/app.asar/dsh/node_modules",
+  "fetchRestored": true,
+  "realNetworkRequests": 0,
+  "realCredentialReads": 0,
+  "realCredentialWrites": 0,
+  "realOAuthLogin": "NOT_RUN",
+  "realInference": "NOT_RUN",
+  "realHostRestart": "NOT_RUN",
+  "tests": [
+    {
+      "id": "T01-native-openai-oauth-login-is-unsupported",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T02-openai-oauth-record-rejected-before-http",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T03-unsupported-oauth-does-not-fallback-to-ambient-key",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T04-apiKeyEnv-overrides-stored-openai-oauth",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "provider": "openai",
+            "scheme": "Bearer",
+            "hasAccountHeader": false,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T05-missing-apiKeyEnv-stops-without-stored-fallback",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T06-stored-api-key-wins-over-ambient",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "provider": "openai",
+            "scheme": "Bearer",
+            "hasAccountHeader": false,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T07-ambient-key-used-only-without-stored-record",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "provider": "openai",
+            "scheme": "Bearer",
+            "hasAccountHeader": false,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T08-codex-oauth-reaches-correct-http-endpoint",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T09-account-switch-read-by-same-adapter-next-call",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          },
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T10-expired-codex-refreshes-and-writes-before-http",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 1
+      }
+    },
+    {
+      "id": "T11-parallel-codex-refresh-deduplicated-with-mock-lock",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          },
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 1
+      }
+    },
+    {
+      "id": "T12-refresh-failure-does-not-fallback-or-write",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 1
+      }
+    },
+    {
+      "id": "T13-provider-records-and-protocols-are-independent",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://api.openai.com/v1/responses",
+            "provider": "openai",
+            "scheme": "Bearer",
+            "hasAccountHeader": false,
+            "hasOpencodeHeader": false
+          },
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T14-new-adapter-reads-serialized-mock-record-not-real-restart",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T16-codex-apiKeyEnv-overrides-oauth-and-selects-key-account",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T17-explicit-pi-apiKey-override-wins",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [],
+        "refreshRequests": 0
+      }
+    },
+    {
+      "id": "T15-logout-deletion-takes-effect-next-call",
+      "status": "PASS",
+      "evidence": {
+        "modelRequests": [
+          {
+            "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+            "provider": "openai-codex",
+            "scheme": "Bearer",
+            "hasAccountHeader": true,
+            "hasOpencodeHeader": false
+          }
+        ],
+        "refreshRequests": 0
+      }
+    }
+  ],
+  "passed": 17,
+  "failed": 0
+}

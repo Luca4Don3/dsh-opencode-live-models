@@ -1,0 +1,29 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "preflight",
+  "startedAt": "2026-10-15T07:42:38.153Z",
+  "gates": {
+    "P0_CODEX": "PENDING",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "transport": "sse"
+  },
+  "evidence": [
+    {
+      "id": "PREFLIGHT",
+      "status": "PASS",
+      "nativeFlow": true,
+      "nativeCatalogModel": true,
+      "credentialConfigured": false
+    }
+  ],
+  "network": []
+}

@@ -1,0 +1,65 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "refresh-call",
+  "startedAt": "2026-10-15T07:53:28.863Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-6-sol",
+    "transport": "sse"
+  },
+  "evidence": [
+    {
+      "id": "E02",
+      "status": "PASS",
+      "publicCredentialService": true,
+      "ownerOnly": true,
+      "reloadedByNewDshProcess": false
+    },
+    {
+      "id": "E07_REFRESH",
+      "status": "PASS",
+      "nativeRefresh": true,
+      "recordStillOAuth": true,
+      "credentialRotated": true,
+      "storedExpiryNotManuallyChanged": true
+    }
+  ],
+  "network": [
+    {
+      "kind": "oauth",
+      "endpoint": "https://auth.openai.com/oauth/token",
+      "status": 200,
+      "operation": "refresh"
+    },
+    {
+      "kind": "model",
+      "method": "POST",
+      "provider": "openai-codex",
+      "protocol": "openai-codex-responses",
+      "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+      "authentication": "stored-oauth-exact-match",
+      "sameAccount": true,
+      "status": 429,
+      "errorMessage": "The usage limit has been reached"
+    }
+  ],
+  "request": {
+    "provider": "openai-codex",
+    "model": "gpt-6-sol",
+    "prompt": "Reply with exactly this marker and nothing else: P0_CODEX_OK_a4ba4bde520d483ea694e00a69e3a883",
+    "maxTokens": 1024
+  },
+  "failure": {
+    "name": "Error",
+    "code": "SERVER_DID_NOT_ACCEPT_REQUEST"
+  }
+}
