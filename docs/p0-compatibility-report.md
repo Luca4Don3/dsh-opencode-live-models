@@ -378,3 +378,48 @@ Codex CLI 源码证实 ChatGPT 后端查询路径为 `{base}/wham/usage`（`Path
 | P0 总门禁 | **BLOCKED**（不变） |
 
 P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi/Grok 等适配器与 UI、缓存、多账号等均属后续独立阶段，未在本轮实施。
+
+### 14.8 Q01 验收矩阵（Codex 额度接口，基于真实账号证据）
+
+| 编号 | 验收项 | 结果 | 依据 |
+|---|---|---|---|
+| Q01-01 | 凭据读取（复用已有 OAuth，不重新登录） | PASS | login-call 后的独立 `query` 动作用已存凭据（无登录动作）取得 200 |
+| Q01-02 | 账号一致性 | PASS | 查询与请求模型同一 grant（accountKey 哈希一致），未跨账号 |
+| Q01-03 | 额度数据解析 | PASS | exhausted、primary 100%、secondary 16%、resetCredits 1 |
+| Q01-04 | 时间窗口识别 | PASS | primary=300 分钟、secondary=10080 分钟，以服务端字段为准 |
+| Q01-05 | 重置时间 | PASS | resetsAt 直接取服务端（1792064732/1792651532），无推算 |
+| Q01-06 | 额度耗尽识别 | PASS | `allowed=false` + `limit_reached=true` + primary 100%，与 429 互证 |
+| Q01-07 | Token 刷新 | PASS | 复用原生 Pi-AI `getAuth`（同 E07 路径），插件未自写刷新 |
+| Q01-08 | 安全边界 | PASS | Token/邮箱/授权 URL 未进日志与归档；仅发官方 origin；归档前敏感扫描 |
+
+### 14.9 Q02：OpenCode Go 额度接口（真实凭据只读查询）
+
+无凭据探测：`GET https://opencode.ai/zen/go/v1/usage` → **401** `AuthError Unauthorized`（直连与代理一致），端点存在且要求认证。
+
+真实查询（经公开凭据服务 `resolve(OPENCODE_GO_API_KEY)`，值不打印不归档，仅发官方 origin）：**HTTP 200**。
+
+| 窗口（pi-subscription-usage 语义） | windowMinutes | 实测 percent（已使用） | 剩余 |
+|---|---|---|---|
+| rolling（5 小时） | 300 | 1% | 99% |
+| weekly | 10080 | 29% | 71% |
+| monthly | 43200 | 37% | 63% |
+
+实测结构：`usage.{rolling,weekly,monthly}.{percent,status,resetsAt}`；`status` 取值 `ok`/`rate-limited`（其他值表示窗口不可用），`resetsAt` 为 ISO 时间戳字符串。与 Codex 的 `rate_limit.*_window` 结构不同，印证「每厂商独立 Adapter、归一化层统一」。
+
+### 14.10 Q03：统一结构与异常矩阵
+
+统一快照结构（UsageSnapshot）已定稿：`providerId/accountKey/plan/windows[]/usageAllowed/status/capturedAt`，窗口含 `id/label/usedPercent/remainingPercent/windowMinutes/resetsAt`。三条硬规则：未知不显示 0%；429 不换算百分比；服务端 `allowed`/明确耗尽优先于百分比推断。
+
+异常矩阵（实测列已验证）：
+
+| 异常 | 处理 | 实测 |
+|---|---|---|
+| 无凭据/401 | auth-required，提示重新授权，不发请求 | Codex 与 Go 端点行为一致（Go 401 结构实测） |
+| 429 额度耗尽 | exhausted 状态证据；百分比仍以额度接口为准 | Codex 模型端点 429 ↔ usage 接口 100% 互证 |
+| 403/风控 | 归类为外部拒绝，不误判为认证失败 | Codex 登录流 Cloudflare 403 实录 |
+| 超时 | error + 保留带时间戳的历史快照（stale） | 授权与查询超时行为实录 |
+| 数据缺失/结构变化 | unknown，不猜数值 | 解析器按实测结构修正的教训实录 |
+
+### 14.11 参考对照文档
+
+三项目固定提交与职责边界、OAuth/额度对照、结构差异与认证要求见 [docs/p0-q-reference-map.md](<<server_path>/Workspace/dsh-opencode-live-models/docs/p0-q-reference-map.md>)。
