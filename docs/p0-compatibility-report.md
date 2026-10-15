@@ -54,7 +54,7 @@
 | P0-07 实际请求认证 | INCOMPATIBLE（openai）；真实 E2E BLOCKED | T 系列请求边界验证；S10/S11/S17 在真实服务组合中确认 Codex 账号/凭据来源 | 所有 HTTP 均为 mock，服务端未接受任何测试请求 |
 | P0-08 刷新 | BLOCKED（真实账号/多进程） | S11：模拟旋转后的 grant 真正落盘并重载；S20：两套原生 adapter 通过真实文件锁只刷新一次 | 同进程两实例不等于多进程；真实 Token 与 DSH 重启未测 |
 | P0-09 插件 UI/额度入口 | BLOCKED（浏览器集成未测） | Models 两个 Slot 和 settings.section 声明存在；S18/S19 验证纯 SlotCore 声明/撤销/订阅 | 未安装 client bundle，未在现有 GUI 渲染或发起额度请求 |
-| P0-10 生命周期 | BLOCKED（部分真实证据已取得） | S08/S09/S13/S16 真实 Fiber 撤销；S18/S19 纯 UI 注册；**第 15 章真实 Loader 三轮 install/uninstall/reinstall（84/34 → 73/30 → 84/34）PASS** | HMR 运行时热重载、disabled 配置态、进行中额度查询取消、React/UI 层仍未测 |
+| P0-10 生命周期 | BLOCKED（大幅收敛） | S08/S09/S13/S16、S18/S19；**15 章真实 Loader 三轮 PASS**；**16 章同进程 disabled/重装/配置 HMR PASS（单进程 84/34 → 73/30 → 84/34）**；probe 竞态 (c2)(e)(f)(h)(i)(j)；abort 与刷新竞态修复均已合并 main | 剩余：源码级 HMR、React/UI 层、进行中额度查询取消 |
 
 ## 4. P0-02：当前 OpenAI 不支持 OAuth 的直接证据
 
@@ -451,7 +451,7 @@ P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi
 
 providers 在三轮中均为 `[opencode, opencode-go]`，观察器退出正常，无 `failed to import`/`did not activate`。证据：[docs/validation/p0-lifecycle/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle/>)。
 
-**这补上了第 3 章 P0-10 缺失的「真实 profile 安装/卸载/重装」项——但三轮均为独立 DSH 进程，只证明跨进程的配置切换正确性**。仍未覆盖：**同一运行中进程的卸载**（原型包装恢复、旧监听器与定时器消除、旧异步任务不影响新实例）、HMR 运行时热重载、`disabled` 配置态、进行中的额度请求取消、React/UI 层。复现观察器脚本见 [docs/validation/p0-lifecycle-observer.mjs](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle-observer.mjs>)。
+**这补上了第 3 章 P0-10 缺失的「真实 profile 安装/卸载/重装」项——三轮均为独立 DSH 进程，只证明跨进程的配置切换正确性；其中「同一运行中进程的禁用/重装与配置 HMR」已由第 16 章补测通过**。仍未覆盖：源码级 HMR（代码监视）、React/UI 层、进行中的额度请求取消。复现观察器脚本见 [docs/validation/p0-lifecycle-observer.mjs](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle-observer.mjs>)。
 
 ### 15.2 多账号隔离（合成层，T17–T19）
 
@@ -473,3 +473,58 @@ providers 在三轮中均为 `[opencode, opencode-go]`，观察器退出正常�
 | 卸载时主动 abort 在途 fetch | probe (i)（**PR #4 分支 `feat/abort-inflight-requests`**） | PASS（176/176），待合入 main |
 
 probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader 实测共同构成本轮生命周期证据；HMR/watch 场景仍属未测。
+## 16. P0-10 补测二：同进程禁用与配置 HMR
+
+执行日期：2026-10-15。目标：补第 15 章留下的核心缺口——**同一运行中 DSH 进程内**的禁用、卸载效果与重装，而非跨进程配置切换。
+
+方法：隔离 profile 装 main 快照插件 + 长驻采样观察器（`docs/validation/p0-watch-observer.mjs`）+ 原生 `dsh-hmr`（insert `hmr` entry，`root: []` 仅配置监视；需同时提供其依赖的 `timer` 服务）。driver 在单一进程运行期间依次写入 disabled 版补丁（chokidar 2s 写稳定窗触发 reload）→ 恢复 enabled 版 → SIGINT 优雅退出，每秒采样模型数。
+
+| seq | opencode | opencode-go | 阶段 |
+|---|---|---|---|
+| 1 | 73 | 30 | 启动基线 |
+| 2 | 84 | 34 | 插件 overlay 生效 |
+| 3 | **73** | **30** | **同进程 disabled：补丁写入后 ~3s 回落** |
+| 4 | **84** | **34** | **同进程 re-enable：~4s 恢复** |
+
+全程单进程（PID 80214 未变），启动零 entry 失败，SIGINT 优雅退出。证据：[docs/validation/p0-hmr/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-hmr/>)。
+
+**结论**：同进程 disabled 触发该 entry 的 Fiber dispose —— 计数回落证明主插件的 unpatch/包装恢复在**运行中进程**内生效（overlay 消失），重新 enable 后 overlay 恢复；配置级 HMR（patch 热重载）可用。
+
+**仍未覆盖**：源码级 HMR（`root: []` 不做代码监视，仅配置 reload）、React/UI 层、进行中额度请求取消、真实浏览器界面。
+
+## 17. P0 门禁终评（不自动放行 P1）
+
+### 17.1 三独立门禁
+
+| 门禁 | 结果 | 依据章节 |
+|---|---|---|
+| P0-Q 额度查询 | **PASS** | 14（wham/usage、Go usage 200，19 断言 CI 门禁） |
+| P0-CODEX 认证与额度场景 | **PASS**（E05-A：授权/交接/刷新/并发/429 拒绝） | 12 |
+| P0-CODEX 正常推理（E05-B） | **NOT TESTED**（配额恢复后补） | 12.4 |
+| P0-OPENAI ChatGPT OAuth | **INCOMPATIBLE** | 1/4 |
+| **P0 总门禁** | **BLOCKED** | 见 17.2 |
+
+### 17.2 P0-01..P0-10 终态
+
+| 项 | 终态 | 关键进展（合并 #3/#4/#5 后） |
+|---|---|---|
+| P0-01 版本 | PASS（本机安装版范围） | 固定：DSH 0.2.0-rc.2 / Pi-AI 0.87.1 |
+| P0-02 OAuth API | INCOMPATIBLE（openai）/ PASS（openai-codex） | 12 章 E2E |
+| P0-03 凭据格式 | INCOMPATIBLE（openai）/ Codex 已核对 | 5 章 |
+| P0-04 公共存储 | PASS（真实服务隔离范围） | 7.1 S01–S08 |
+| P0-05 凭据交接 | INCOMPATIBLE（openai）/ Codex PASS | 12 章 |
+| P0-06 认证优先级 | PASS（隔离范围） | 6 章 T03–T07/T12/T16/T17 |
+| P0-07 请求认证 | Codex 认证链 PASS（真实 429 互证）/ openai INCOMPATIBLE；真实 200 NOT TESTED | 12/14 |
+| P0-08 刷新 | PASS（真实刷新 + 双进程去重） | 12 E07/E09、7.1 S11/S20 |
+| P0-09 UI/额度入口 | BLOCKED（浏览器集成未测；Slots 已核对） | 7.1 S18/S19 |
+| P0-10 生命周期 | **BLOCKED（大幅收敛）**：真实 Loader 三轮 15 章、同进程 disabled/HMR 16 章、probe 竞态 (c2)(e)(f)(h)(i)(j)、abort 修复已合并；剩 React/UI、源码级 HMR、进行中额度请求取消 | 15/16 |
+
+### 17.3 P0 总门禁仍 BLOCKED 的具体原因
+
+1. P0-OPENAI 明确 INCOMPATIBLE（宿主 Pi-AI 0.87.1 无 ChatGPT OAuth 能力，红线内无解，保留待宿主升级后复验）。
+2. P0-07 正常推理 200（E05-B）待配额恢复补测。
+3. P0-09 浏览器 UI 集成未实测。
+4. P0-10 残余：源码级 HMR、React/UI 层、进行中额度请求取消。
+5. 真实多账号缓存隔离 NOT TESTED（引擎未建）。
+
+**以上逐项闭合前，P1（统一额度引擎）不获放行；P0-Q PASS 不改变总门禁。** 本评估不引入任何 DSH 修改或新依赖。
