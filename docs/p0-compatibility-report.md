@@ -280,7 +280,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 | E02 持久化 | PASS | 经公开 `ctx.credentials` 写入隔离 store，文件权限 0600，重载后 grant 结构完好 |
 | E03 凭据读取 | PASS | 模型请求携带与已存 grant 逐字节一致的 Bearer 与相同 `chatgpt-account-id`（exact-match 断言在发请求前执行） |
 | E04 协议端点 | PASS | POST `https://chatgpt.com/backend-api/codex/responses`，协议 openai-codex-responses，无 `x-opencode-session` |
-| E05 服务端完成响应 | **BLOCKED（外部条件）** | 认证被受理并进入配额层；4 个模型对照：`gpt-5.5`/`gpt-5.3-codex-spark` → 400「not supported when using Codex with a ChatGPT account」；`gpt-5.6-sol`/`gpt-6-sol` → **429「The usage limit has been reached」**。测试账号配额窗口耗尽，未取得 200 响应 |
+| E05 服务端完成响应 | **BLOCKED（外部条件，用户已确认）** | 认证被受理并进入配额层；4 个模型对照：`gpt-5.5`/`gpt-5.3-codex-spark` → 400「not supported when using Codex with a ChatGPT account」；`gpt-5.6-sol`/`gpt-6-sol` → **429「The usage limit has been reached」**。**用户确认该测试账号配额确已耗尽，429 为真实配额信号而非误判**；未取得 200 响应 |
 | E06 认证优先级 | PASS | 配置不存在的 `apiKeyEnv` 引用后：`requestFailureCode=MISSING_CREDENTIAL`、零模型请求、**不回退到已存 OAuth**；未绕过优先级 |
 | E07 Token 刷新 | PASS | 以公开 `minOAuthValidityMs` 触发（未改存储过期时间）：refresh 端点 **200**、凭据旋转、记录仍为 OAuth、刷新后凭据直接用于后续请求 |
 | E08 重启恢复 | PASS（隔离 profile 范围） | 多个**全新 DSH 进程**从磁盘恢复同一 grant 并发起请求；`desktopRestarted=false`，未重启正式 Desktop |
@@ -291,12 +291,12 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 1. **CLI 不继承 GUI 代理**：直连被判定地区不支持（403），显式代理后正常。浏览器与 CLI 的出口不同，第一次登录失败即此原因，与认证实现无关。
 2. **目录不等于账号可用集**：内置 0.87.1 目录 8 个模型中，至少两个在该账号返回 400 模型不支持——印证「Pi 目录出现某模型不代表当前账号可调用」。
-3. **配额在模型端点返回 429**：可用模型统一返回 usage limit，这正是后续额度监控需要捕获的信号；本轮不据此放行 E05。
+3. **配额在模型端点返回 429**：可用模型统一返回 usage limit，用户已确认测试账号配额确实用尽，该 429 是真实的额度信号——正是后续额度监控需要捕获的信号；本轮不据此放行 E05。
 4. 每次模型请求前的 exact-match 断言保证不会把 API Key 误判为 OAuth；全程未配置或使用任何 API Key。
 
 ### 12.4 E05 解除条件
 
-在配额窗口重置后的测试账号上重跑 `sh launch-proxy.sh call`，取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256）。取得该证据前 E05 保持 BLOCKED，P0-CODEX 不放行。
+账号配额已由用户确认耗尽，E05 只能在配额窗口重置后解除：按本节记录重建隔离 profile（临时目录已按第 13 节清理），在配额重置后的账号上跑一次 `call`，取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256）。取得该证据前 E05 保持 BLOCKED，P0-CODEX 不放行。
 
 ### 12.5 边界
 

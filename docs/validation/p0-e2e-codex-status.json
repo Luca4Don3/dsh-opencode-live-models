@@ -1,6 +1,6 @@
 {
   "stage": "P0-E2E-CODEX",
-  "updatedAt": "2026-10-15T07:56:52.562Z",
+  "updatedAt": "2026-10-15T08:07:13.042Z",
   "gates": {
     "P0_CODEX": "PARTIAL_E05_BLOCKED",
     "P0_OPENAI": "INCOMPATIBLE",
@@ -41,7 +41,9 @@
         "detail": "usage-limit-reached"
       }
     ],
-    "retryAfterWindowReset": true
+    "retryAfterWindowReset": true,
+    "userConfirmedQuotaExhausted": true,
+    "userConfirmedNote": "测试账号配额确已耗尽，429 usage limit 为真实配额信号，非误判"
   },
   "networkDiagnosis": {
     "direct": {
