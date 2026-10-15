@@ -1,0 +1,63 @@
+{
+  "stage": "P0-Q2",
+  "action": "usage",
+  "startedAt": "2026-10-15T10:59:03.280Z",
+  "endedAt": "2026-10-15T10:59:04.997Z",
+  "refName": "OPENCODE_GO_API_KEY",
+  "refSource": "file",
+  "keyHash": "sha256:94db009f",
+  "endpoint": "https://opencode.ai/zen/go/v1/usage",
+  "httpStatus": 200,
+  "normalized": {
+    "providerId": "opencode-go",
+    "scope": "subscription",
+    "status": "ready",
+    "capturedAt": 1792061944997,
+    "observedNumericFields": [
+      [
+        "usage.rolling.percent",
+        1
+      ],
+      [
+        "usage.weekly.percent",
+        29
+      ],
+      [
+        "usage.monthly.percent",
+        37
+      ]
+    ],
+    "observedShape": [
+      [
+        "usage.rolling.status",
+        "<str:2>"
+      ],
+      [
+        "usage.rolling.resetsAt",
+        "<str:24>"
+      ],
+      [
+        "usage.weekly.status",
+        "<str:2>"
+      ],
+      [
+        "usage.weekly.resetsAt",
+        "<str:24>"
+      ],
+      [
+        "usage.monthly.status",
+        "<str:2>"
+      ],
+      [
+        "usage.monthly.resetsAt",
+        "<str:24>"
+      ]
+    ]
+  },
+  "redaction": {
+    "keyOmitted": true,
+    "keyHashOnly": true,
+    "responseStringsAsLengths": true
+  },
+  "notes": "read-only GET; no inference; key never printed or archived"
+}

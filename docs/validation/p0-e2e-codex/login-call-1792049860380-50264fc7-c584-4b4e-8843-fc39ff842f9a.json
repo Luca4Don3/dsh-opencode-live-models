@@ -1,0 +1,32 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "login-call",
+  "startedAt": "2026-10-15T07:35:41.363Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "transport": "sse"
+  },
+  "evidence": [],
+  "network": [
+    {
+      "kind": "oauth",
+      "endpoint": "https://auth.openai.com/oauth/token",
+      "status": 403,
+      "operation": "device-auth"
+    }
+  ],
+  "failure": {
+    "name": "Error",
+    "code": "VERIFICATION_FAILED"
+  }
+}

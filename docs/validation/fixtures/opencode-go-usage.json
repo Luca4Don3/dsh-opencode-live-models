@@ -1,0 +1,20 @@
+{
+  "note": "P0-Q 脱敏合成 Fixture：结构与数值取自 2026-10-15 实测 /zen/go/v1/usage 响应",
+  "usage": {
+    "rolling": {
+      "percent": 1,
+      "status": "ok",
+      "resetsAt": "2026-10-15T11:59:03.000Z"
+    },
+    "weekly": {
+      "percent": 29,
+      "status": "ok",
+      "resetsAt": "2026-10-22T00:00:00.000Z"
+    },
+    "monthly": {
+      "percent": 37,
+      "status": "ok",
+      "resetsAt": "2026-11-01T00:00:00.000Z"
+    }
+  }
+}

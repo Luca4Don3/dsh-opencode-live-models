@@ -1,0 +1,140 @@
+{
+  "stage": "P0-Q",
+  "action": "query",
+  "startedAt": "2026-10-15T10:46:15.832Z",
+  "endedAt": "2026-10-15T10:46:17.660Z",
+  "gates": {
+    "P0_CODEX": "PENDING_QUOTA_RESEARCH",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "endpoints": {
+    "usage": "https://chatgpt.com/backend-api/wham/usage",
+    "status": 200,
+    "resetsStatus": 200
+  },
+  "normalized": {
+    "providerId": "openai-codex",
+    "accountKey": "acct_e3b0c44298",
+    "scope": "subscription",
+    "status": "exhausted",
+    "usageAllowed": false,
+    "limitReached": true,
+    "planWindows": [
+      {
+        "id": "primary",
+        "usedPercent": 100,
+        "remainingPercent": 0,
+        "durationMinutes": 300,
+        "resetsAt": 1792064732
+      },
+      {
+        "id": "secondary",
+        "usedPercent": 16,
+        "remainingPercent": 84,
+        "durationMinutes": 10080,
+        "resetsAt": 1792651532
+      }
+    ],
+    "modelUsage": [
+      {
+        "modelId": "gpt-6-astra",
+        "available": false,
+        "creditsWouldEnable": true
+      }
+    ],
+    "groups": [
+      {
+        "id": "plan",
+        "label": "Plan windows",
+        "windows": [
+          {
+            "id": "primary",
+            "usedPercent": 100,
+            "remainingPercent": 0,
+            "durationMinutes": 300,
+            "resetsAt": 1792064732
+          },
+          {
+            "id": "secondary",
+            "usedPercent": 16,
+            "remainingPercent": 84,
+            "durationMinutes": 10080,
+            "resetsAt": 1792651532
+          }
+        ]
+      }
+    ],
+    "credits": {
+      "hasCredits": false,
+      "unlimited": false
+    },
+    "resetCreditsCount": 1,
+    "resetCreditsApplicableCount": 1,
+    "resetCreditsStatus": 200,
+    "planType": "plus",
+    "rawFieldPaths": [
+      "user_id",
+      "account_id",
+      "email",
+      "plan_type",
+      "rate_limit.allowed",
+      "rate_limit.limit_reached",
+      "rate_limit.primary_window.used_percent",
+      "rate_limit.primary_window.limit_window_seconds",
+      "rate_limit.primary_window.reset_after_seconds",
+      "rate_limit.primary_window.reset_at",
+      "rate_limit.secondary_window.used_percent",
+      "rate_limit.secondary_window.limit_window_seconds",
+      "rate_limit.secondary_window.reset_after_seconds",
+      "rate_limit.secondary_window.reset_at",
+      "code_review_rate_limit",
+      "additional_rate_limits",
+      "model_usage.gpt-6-astra.available",
+      "model_usage.gpt-6-astra.available_at",
+      "model_usage.gpt-6-astra.credits_would_enable",
+      "credits.has_credits",
+      "credits.unlimited",
+      "credits.overage_limit_reached",
+      "credits.balance",
+      "credits.approx_local_messages",
+      "credits.approx_cloud_messages",
+      "spend_control.reached",
+      "spend_control.individual_limit",
+      "rate_limit_reached_type.type",
+      "rate_limit_reached_type.details",
+      "rate_limit_upsell.banner_type",
+      "rate_limit_upsell.title",
+      "rate_limit_upsell.description",
+      "rate_limit_upsell.ctas",
+      "rate_limit_upsell.reset_at",
+      "rate_limit_upsell.referral",
+      "rate_limit_upsell.request_url",
+      "promo",
+      "rate_limit_reset_credits.available_count",
+      "rate_limit_reset_credits.applicable_available_count"
+    ],
+    "capturedAt": "2026-10-15T10:46:17.660Z"
+  },
+  "redaction": {
+    "tokensOmitted": true,
+    "emailOmitted": true,
+    "accountIdHashed": true,
+    "responseBodyRawOmitted": true
+  },
+  "network": [
+    {
+      "kind": "usage-read",
+      "endpoint": "https://chatgpt.com/backend-api/wham/usage",
+      "status": 200,
+      "method": "GET"
+    },
+    {
+      "kind": "usage-read",
+      "endpoint": "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+      "status": 200,
+      "method": "GET"
+    }
+  ],
+  "notes": "read-only usage snapshot; no inference sent; no reset consumed"
+}

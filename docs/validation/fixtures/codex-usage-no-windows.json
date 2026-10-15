@@ -1,0 +1,11 @@
+{
+  "note": "P0-Q 合成 Fixture：窗口缺失，必须判 unknown 而非额度充足/0%",
+  "account_id": "",
+  "plan_type": "plus",
+  "rate_limit": {
+    "limit_reached": false
+  },
+  "credits": {
+    "has_credits": false
+  }
+}

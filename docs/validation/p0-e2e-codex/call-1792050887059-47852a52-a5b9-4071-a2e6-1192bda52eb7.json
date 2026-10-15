@@ -1,0 +1,40 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "call",
+  "startedAt": "2026-10-15T07:54:47.058Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-6-sol",
+    "transport": "sse"
+  },
+  "evidence": [
+    {
+      "id": "E02",
+      "status": "PASS",
+      "publicCredentialService": true,
+      "ownerOnly": true,
+      "reloadedByNewDshProcess": true
+    }
+  ],
+  "network": [],
+  "request": {
+    "provider": "openai-codex",
+    "model": "gpt-6-sol",
+    "prompt": "Reply with exactly this marker and nothing else: P0_CODEX_OK_7b88660368f14dea91ab7cc3e0408b6e",
+    "maxTokens": 1024
+  },
+  "requestFailureCode": "MISSING_CREDENTIAL",
+  "failure": {
+    "name": "Error",
+    "code": "MISSING_CREDENTIAL_NO_OAUTH_FALLBACK"
+  }
+}

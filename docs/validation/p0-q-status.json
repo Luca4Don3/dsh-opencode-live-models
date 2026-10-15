@@ -1,0 +1,114 @@
+{
+  "stage": "P0-Q",
+  "updatedAt": "2026-10-15T11:28:35.161Z",
+  "gates": {
+    "P0_Q": "PASS",
+    "P0_CODEX": "AUTH_AND_QUOTA_SCENE_PASS_NORMAL_COMPLETION_NOT_TESTED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "endpoints": {
+    "usage": "https://chatgpt.com/backend-api/wham/usage",
+    "status": 200,
+    "resets": "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+    "resetsStatus": 200
+  },
+  "planType": "plus",
+  "normalized": {
+    "usageAllowed": false,
+    "limitReached": true,
+    "primary": {
+      "usedPercent": 100,
+      "durationMinutes": 300,
+      "resetsAt": 1792064732
+    },
+    "secondary": {
+      "usedPercent": 16,
+      "durationMinutes": 10080,
+      "resetsAt": 1792651532
+    },
+    "modelUsage": [
+      {
+        "modelId": "gpt-6-astra",
+        "available": false,
+        "creditsWouldEnable": true
+      }
+    ],
+    "resetCredits": 1
+  },
+  "crossValidation": {
+    "modelCall429MatchesPrimaryExhausted": true,
+    "secondaryWindowStill84Percent": true,
+    "note": "429 只能作受限状态证据，百分比与重置时间来自额度接口"
+  },
+  "externalBlockers": [
+    {
+      "kind": "auth-flow-timeout-60s",
+      "resolved": true
+    },
+    {
+      "kind": "cloudflare-consent-403",
+      "resolved": false,
+      "note": "OpenAI 侧风控，第二轮授权浏览器通过"
+    }
+  ],
+  "inferenceSent": false,
+  "resetsConsumed": false,
+  "tokensArchived": false,
+  "referenceCommits": {
+    "pi": "4a5d37291531",
+    "codex": "2a6ecbb93c42",
+    "piSubscriptionUsage": "1015f9f419df"
+  },
+  "q01": {
+    "all": "PASS",
+    "matrix": "Q01-01..08"
+  },
+  "q02": {
+    "endpoint": "https://opencode.ai/zen/go/v1/usage",
+    "noAuthProbe": 401,
+    "realQueryStatus": 200,
+    "refSource": "file",
+    "windows": {
+      "rolling": {
+        "usedPercent": 1,
+        "windowMinutes": 300
+      },
+      "weekly": {
+        "usedPercent": 29,
+        "windowMinutes": 10080
+      },
+      "monthly": {
+        "usedPercent": 37,
+        "windowMinutes": 43200
+      }
+    },
+    "status": "ok",
+    "keyPrintedOrArchived": false
+  },
+  "q03": {
+    "snapshotStructure": "UsageSnapshot",
+    "rules": [
+      "unknown-not-zero",
+      "429-no-percent-inference",
+      "server-allowed-precedence"
+    ],
+    "exceptionMatrix": "documented"
+  },
+  "stages": {
+    "P0_Q": "PASS",
+    "P1": "NOT_STARTED",
+    "note": "P0-Q 通过后方可进入额度引擎开发"
+  },
+  "identity": {
+    "accountKeyDefect": "acct_e3b0c44298 is sha256 of empty string; server account_id was empty",
+    "rule": "non-empty verified id only; else identity-unverified; no empty-hash cache keys",
+    "historicalEvidenceUnchanged": true
+  },
+  "regression": {
+    "fixtures": 4,
+    "testFile": "docs/validation/quota-parse.test.mjs",
+    "assertions": 12,
+    "result": "ALL_PASS"
+  }
+}
