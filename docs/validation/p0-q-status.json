@@ -1,0 +1,58 @@
+{
+  "stage": "P0-Q",
+  "updatedAt": "2026-10-15T10:49:22.481Z",
+  "gates": {
+    "P0_Q": "PASS",
+    "P0_CODEX": "AUTH_AND_QUOTA_SCENE_PASS_NORMAL_COMPLETION_NOT_TESTED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "endpoints": {
+    "usage": "https://chatgpt.com/backend-api/wham/usage",
+    "status": 200,
+    "resets": "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+    "resetsStatus": 200
+  },
+  "planType": "plus",
+  "normalized": {
+    "usageAllowed": false,
+    "limitReached": true,
+    "primary": {
+      "usedPercent": 100,
+      "durationMinutes": 300,
+      "resetsAt": 1792064732
+    },
+    "secondary": {
+      "usedPercent": 16,
+      "durationMinutes": 10080,
+      "resetsAt": 1792651532
+    },
+    "modelUsage": [
+      {
+        "modelId": "gpt-6-astra",
+        "available": false,
+        "creditsWouldEnable": true
+      }
+    ],
+    "resetCredits": 1
+  },
+  "crossValidation": {
+    "modelCall429MatchesPrimaryExhausted": true,
+    "secondaryWindowStill84Percent": true,
+    "note": "429 只能作受限状态证据，百分比与重置时间来自额度接口"
+  },
+  "externalBlockers": [
+    {
+      "kind": "auth-flow-timeout-60s",
+      "resolved": true
+    },
+    {
+      "kind": "cloudflare-consent-403",
+      "resolved": false,
+      "note": "OpenAI 侧风控，第二轮授权浏览器通过"
+    }
+  ],
+  "inferenceSent": false,
+  "resetsConsumed": false,
+  "tokensArchived": false
+}
