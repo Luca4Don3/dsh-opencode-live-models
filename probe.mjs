@@ -2115,6 +2115,71 @@ freshState()
       sLogs.filter(l => l.includes('refresh failed')).length === 0)
   }
 
+  // (j) Go 刷新在途时 Zen 新注册：新 scope 的立即刷新不得被 join 吞掉
+  {
+    const zenDirectory = fixture('pi-dev-opencode.json')
+    const zenLive = fixture('zen-models.json').data
+    const zenRaw = fixture('opencode-0.87.1.json')
+    const zenInstalled = []
+    for (const models of Object.values(zenRaw)) zenInstalled.push(...Object.values(models))
+    let releaseGo
+    const goGate = new Promise(r => { releaseGo = r })
+    const fetched = { goCatalog: 0, zenCatalog: 0, goRoster: 0, zenRoster: 0 }
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/api/models/providers/opencode-go')) {
+        fetched.goCatalog += 1
+        await goGate
+        return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      }
+      if (u.startsWith('https://pi.dev/api/models/providers/opencode?')) {
+        fetched.zenCatalog += 1
+        return new Response(JSON.stringify(zenDirectory), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        fetched.goRoster += 1
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/v1/models')) {
+        fetched.zenRoster += 1
+        return new Response(JSON.stringify({ data: zenLive.map(m => ({ id: m.id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const goColl = makeColl('opencode-go', () => INSTALLED.slice())
+    const zenColl = makeColl('opencode', () => zenInstalled)
+    const adapters = new Map()
+    adapters.set('opencode-go', { adapter: { current: () => ({ models: goColl }) } })
+    globalThis.setInterval = () => ({ unref() {} })
+    const sLogs = []
+    const listeners = new Map()
+    const disposers = []
+    freshState()
+    const mod = await import('./lib/index.js?interleave')
+    await mount(mod, {
+      llm: { adapters },
+      logger: { info: () => {}, warn: (...a) => sLogs.push(a.join(' ')), debug: () => {} },
+      emit: (ev) => { for (const fn of listeners.get(ev) ?? []) fn(ev) },
+      effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+      on: (ev, fn) => { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(fn) },
+    })
+    for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('llm/adapters-updated')
+    let guard = 0
+    while (fetched.goCatalog === 0 && guard < 30) { await wait(); guard += 1 }
+    const goInFlight = fetched.goCatalog > 0 && fetched.zenCatalog === 0
+    adapters.set('opencode', { adapter: { current: () => ({ models: zenColl }) } })
+    for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('llm/adapters-updated')
+    await wait(); await wait(); await wait()
+    releaseGo()
+    for (let i = 0; i < 30; i += 1) await wait()
+    ok('(j) Go 在途时新注册的 Zen 被立即刷新，而非被 join 吞掉',
+      goInFlight && fetched.zenCatalog > 0,
+      `goInFlight=${goInFlight}，zenCatalog=${fetched.zenCatalog}（期望 >=1）`)
+    ok('(j) Go 自身刷新完成且无 refresh failed',
+      fetched.goRoster >= 1 && sLogs.filter(l => l.includes('refresh failed')).length === 0,
+      `goRoster=${fetched.goRoster}，${sLogs.find(l => l.includes('refresh failed'))?.slice(0, 220) ?? '无失败'}`)
+    for (const d of disposers) d()
+  }
   // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
   {
     let release
