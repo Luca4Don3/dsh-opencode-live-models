@@ -1,0 +1,31 @@
+{
+  "note": "P0-Q 合成 Fixture：额度充足变体，用于验证 allowed=true 与窗口语义",
+  "account_id": "fixture-account-2",
+  "plan_type": "plus",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "used_percent": 40,
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 7200,
+      "reset_at": 1792072000
+    },
+    "secondary_window": {
+      "used_percent": 20,
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 500000,
+      "reset_at": 1792656000
+    }
+  },
+  "additional_rate_limits": [],
+  "model_usage": {},
+  "credits": {
+    "has_credits": false,
+    "unlimited": false
+  },
+  "rate_limit_reset_credits": {
+    "available_count": 2,
+    "applicable_available_count": 2
+  }
+}

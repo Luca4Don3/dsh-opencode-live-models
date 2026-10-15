@@ -1,0 +1,51 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "action": "call",
+  "startedAt": "2026-10-15T07:49:30.754Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "environment": {
+    "piAi": "0.87.1",
+    "node": "24.18.1",
+    "electron": "44.0.0",
+    "isolatedHome": true,
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "transport": "sse"
+  },
+  "evidence": [
+    {
+      "id": "E02",
+      "status": "PASS",
+      "publicCredentialService": true,
+      "ownerOnly": true,
+      "reloadedByNewDshProcess": true
+    }
+  ],
+  "network": [
+    {
+      "kind": "model",
+      "method": "POST",
+      "provider": "openai-codex",
+      "protocol": "openai-codex-responses",
+      "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+      "authentication": "stored-oauth-exact-match",
+      "sameAccount": true,
+      "status": 400,
+      "raw": "{\"detail\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}"
+    }
+  ],
+  "request": {
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "prompt": "Reply with exactly this marker and nothing else: P0_CODEX_OK_f730d3721446441cbe2de298ddd672f0",
+    "maxTokens": 1024
+  },
+  "failure": {
+    "name": "Error",
+    "code": "SERVER_DID_NOT_ACCEPT_REQUEST"
+  }
+}

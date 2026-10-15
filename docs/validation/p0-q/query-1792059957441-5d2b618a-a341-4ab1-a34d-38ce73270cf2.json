@@ -1,0 +1,14 @@
+{
+  "stage": "P0-Q",
+  "action": "login-call",
+  "endedAt": "2026-10-15T10:25:57.441Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "failure": {
+    "code": "AUTHORIZATION_NOT_COMPLETED",
+    "name": "Error"
+  }
+}

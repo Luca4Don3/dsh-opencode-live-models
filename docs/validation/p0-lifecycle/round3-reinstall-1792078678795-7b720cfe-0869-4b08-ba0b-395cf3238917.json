@@ -1,0 +1,16 @@
+{
+  "stage": "P0-10",
+  "label": "round3-reinstall",
+  "endedAt": "2026-10-15T15:37:58.796Z",
+  "providers": [
+    "opencode",
+    "opencode-go"
+  ],
+  "counts": {
+    "opencode": 84,
+    "opencode-go": 34
+  },
+  "settledAfterMs": 7021,
+  "samplesTaken": 2,
+  "note": "read-only observer; real Loader composition; no model requests sent"
+}

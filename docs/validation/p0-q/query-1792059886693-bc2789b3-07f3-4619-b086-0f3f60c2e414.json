@@ -1,0 +1,14 @@
+{
+  "stage": "P0-Q",
+  "action": "query",
+  "endedAt": "2026-10-15T10:24:46.693Z",
+  "gates": {
+    "P0_CODEX": "BLOCKED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "failure": {
+    "code": "NO_OAUTH_GRANT",
+    "name": "Error"
+  }
+}

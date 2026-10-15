@@ -1,0 +1,70 @@
+{
+  "stage": "P0-E2E-CODEX",
+  "updatedAt": "2026-10-15T10:00:41.517Z",
+  "gates": {
+    "P0_CODEX": "AUTH_CHAIN_AND_QUOTA_SCENE_PASS_NORMAL_COMPLETION_NOT_TESTED",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "cases": {
+    "E01": "PASS",
+    "E02": "PASS",
+    "E03": "PASS",
+    "E04": "PASS",
+    "E05": "PASS_QUOTA_EXHAUSTION_429_AS_EXPECTED",
+    "E06": "PASS",
+    "E07": "PASS",
+    "E08": "PASS_ISOLATED_PROFILE",
+    "E09": "PASS",
+    "E10": "PASS",
+    "E05_NORMAL": "NOT_TESTED_QUOTA_EXHAUSTED"
+  },
+  "e05Evidence": {
+    "modelTests": [
+      {
+        "model": "gpt-5.5",
+        "status": 400,
+        "detail": "model-not-supported-for-chatgpt-account"
+      },
+      {
+        "model": "gpt-5.3-codex-spark",
+        "status": 400,
+        "detail": "model-not-supported-for-chatgpt-account"
+      },
+      {
+        "model": "gpt-5.6-sol",
+        "status": 429,
+        "detail": "usage-limit-reached"
+      },
+      {
+        "model": "gpt-6-sol",
+        "status": 429,
+        "detail": "usage-limit-reached"
+      }
+    ],
+    "retryAfterWindowReset": true,
+    "userConfirmedQuotaExhausted": true,
+    "userConfirmedNote": "测试账号配额确已耗尽，429 usage limit 为真实配额信号，非误判",
+    "acceptanceRedefinition": "429 usage-limit 与账号实际状态一致，判定为正确的额度拒绝场景 PASS；正常推理 200 为配额恢复后的补充验证，非修复项"
+  },
+  "networkDiagnosis": {
+    "direct": {
+      "status": 403,
+      "errorCode": "unsupported_country_region_territory"
+    },
+    "proxy": {
+      "status": 400,
+      "errorCode": "missing_required_parameter"
+    }
+  },
+  "evidenceArchived": 16,
+  "hostModified": false,
+  "productionPluginModified": false,
+  "dependenciesChanged": false,
+  "userCredentialsTouched": false,
+  "nextPriorities": [
+    "Go/Zen 刷新竞态",
+    "网络请求取消",
+    "真实插件生命周期测试"
+  ]
+}

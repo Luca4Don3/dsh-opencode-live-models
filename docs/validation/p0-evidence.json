@@ -1,0 +1,108 @@
+{
+  "capturedAt": "2026-10-15T06:57:12.183Z",
+  "artifact": {
+    "dshVersion": "0.2.0-rc.2",
+    "buildCommit": "5e9e301dd9dc8923b2762f76dacfc5751f6ca851",
+    "piAiVersion": "0.87.1",
+    "archiveSha256": "18d5036bbb58eaff41d351ede99314b8d06505aec06fb2e164c49874ada30f9e"
+  },
+  "runtime": {
+    "node": "24.18.1",
+    "electron": "44.0.0"
+  },
+  "pluginBaseCommit": "b813576b7a5af2312107fc81f78b3f6ba75d7780",
+  "referenceCheckoutCommit": "571902028a75c64c1d767f4ae5fd099485f0ddf0",
+  "sources": [
+    {
+      "archiveEntry": "package.json",
+      "sha256": "86835fd791406e90e391ae7993abe58e54e01f57bac883b9b5590bf881852706",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/package.json",
+      "sha256": "9d2e0dfd69ea38b56ebe83abe08ffd564cc52cc18845eab7b470add6fe980dc4",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/models.js",
+      "sha256": "75fa33149fb608bc4a7b7a0586c8ca8f0024465d580091b0c426c0baf3fbc80a",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/providers/openai.js",
+      "sha256": "105d32833a3ff6654c04429e57dee6a710880c59a79fb0e064a34a684000a386",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/providers/openai-codex.js",
+      "sha256": "769490a94a5bcb062c22e768cf0621c91fb1c5d6be3565e6a6fa765eeeabe674",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/auth/resolve.js",
+      "sha256": "82ee45ecec319f59536759312a4de25313a8bb8cb7ce43db43d18edc10fef305",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/auth/helpers.js",
+      "sha256": "27d4b37f9eeeaa26733bf78437965bd63ae5606813260d4bab045b61009b951b",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/auth/oauth/openai-codex.js",
+      "sha256": "41432753ef2ec7ef21c577fdc8f83b731c78be90c10ed8e7e1df7010f84d198f",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js",
+      "sha256": "3e95145f94ac2a255d1adc0ae65cf02c2e6d479f7a2dbf5c466db21885c29ec6",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js",
+      "sha256": "6e69310d77278231cfc87d7f03ee815d4a0f2ff273e6c43fcee6835e7df2b0c7",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js",
+      "sha256": "d46dbc30aeb3414190000e6f8aeaaf994246b5e5c651de07639f4a7e92de37ef",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-authorization/lib/index.js",
+      "sha256": "e33c13f4c0298024ce0814a41d9d63476d73a5dee51b83bc4325f04f34813e28",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-credentials/lib/index.js",
+      "sha256": "1edbfddea8c1b0833b19fd1c418943160380e9e59206595876aa07cb370d3770",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-credentials-local/lib/index.js",
+      "sha256": "1688f17801d5809abace4ef6228b771625a0153c043d7d4dba21b398ec4056eb",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-client-ui-settings-models/lib/client.js",
+      "sha256": "8e567121402f61582f2e6bf80bd6087996c81de40b8c77c1dd5ff6d343d0e508",
+      "matchesInstalledArtifact": true
+    },
+    {
+      "archiveEntry": "dsh/node_modules/@deepseek-ai/dsh-client-ui-slots/lib/index.js",
+      "sha256": "57e1314e31a2015f30231e1e7596da658f1bb5cb64c103c4cf13381647412c99",
+      "matchesInstalledArtifact": true
+    }
+  ],
+  "followUp": {
+    "capturedAt": "2026-10-15T07:14:20.034Z",
+    "testSuite": "p0-public-services-probe.mjs",
+    "passed": 20,
+    "failed": 0,
+    "originalSourceHashesStillMatch": true,
+    "bundledCordisSha256": "6a9394c0877ff45218818c6e815edd038f8057e1a1deb390a8d43ec81c57691e",
+    "userCredentialsTouched": false,
+    "hostModified": false,
+    "dependenciesChanged": false
+  }
+}
