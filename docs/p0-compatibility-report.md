@@ -530,3 +530,10 @@ probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader �
 5. 真实多账号缓存隔离 NOT TESTED（引擎未建）。
 
 **以上逐项闭合前，P1（统一额度引擎）不获放行；P0-Q PASS 不改变总门禁。** 本评估不引入任何 DSH 修改或新依赖。
+
+若不愿等待 openai 兼容项（宿主限制、当前无解），可审议**限定范围实施门禁**（Codex + OpenCode Go 两家已验证 Provider 的独立额度插件）：[docs/p0-scope-gate.md](<<server_path>/Workspace/dsh-opencode-live-models/docs/p0-scope-gate.md>)——**状态：待用户明确批准，不自动生效**；openai 不兼容项保留在 P0 总门禁中。
+### 16.1 源码级 HMR 实测（P1，结果 NOT ESTABLISHED）
+
+目标：在 hmr 的 `root` 指向插件源码时，修改运行中进程加载的 lib/index.js，观察模块重载。两轮实测（`root` = 真实路径 / loader 加载的 symlink 路径）：配置级监视有效（disabled 切换已由 16 章证明），但源码文件修改后**无任何重载信号**——counts 保持 84/34、无 reload 日志、观察器未重启。
+
+**结论：NOT ESTABLISHED。** 该链路（chokidar 事件 → 分类 → loadCache 归属 → 模块替换）位于宿主 dsh-hmr 内部；在 DSH 零修改红线下不对其做侵入式排查，也不将 link-bundle 隔离环境的失败归因于插件缺陷。证据与驱动脚本归档于 [docs/validation/p0-hmr/](<<server_path>/Workspace/dsh-opencode-live-models/docs/validation/p0-hmr/>)（source-hmr-*）。配置级 HMR（16 章）不受影响，仍为 PASS。

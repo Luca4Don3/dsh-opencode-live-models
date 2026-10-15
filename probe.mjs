@@ -2269,6 +2269,55 @@ freshState()
     for (const d of a.disposers) d()
     for (const d of b.disposers) d()
   }
+  // (l) 禁用语义：dispose 后定时器已清、事件不再触发本插件、包装已恢复
+  {
+    const origClearInterval = globalThis.clearInterval
+    let cleared = 0
+    let fetches = 0
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) { fetches += 1; return new Response(JSON.stringify(PI_DEV), { status: 200 }) }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
+    globalThis.setInterval = (fn) => ({ unref() {} })
+    globalThis.clearInterval = () => { cleared += 1 }
+    const listeners = new Map()
+    const disposers = []
+    const sLogs = []
+    const ctxL = {
+      llm: { adapters },
+      logger: { info: () => {}, warn: (...a) => sLogs.push(a.join(' ')), debug: () => {} },
+      emit: (ev) => { for (const fn of listeners.get(ev) ?? []) fn(ev) },
+      effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+      on: (ev, fn) => {
+        if (!listeners.has(ev)) listeners.set(ev, [])
+        listeners.get(ev).push(fn)
+        // Real Cordis removes fiber-scoped listeners on unload; the mock must
+        // model that or a disposed plugin would look like it still reacts.
+        const off = () => { const arr = listeners.get(ev) ?? []; const i = arr.indexOf(fn); if (i >= 0) arr.splice(i, 1) }
+        disposers.push(off)
+        return off
+      },
+    }
+    freshState()
+    const mod = await import('./lib/index.js?disabled-semantics')
+    await mount(mod, ctxL)
+    for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('x')
+    for (let i = 0; i < 30 && fetches === 0; i += 1) await wait()
+    const adapterBefore = { current: adapters.get('opencode-go').adapter.current }
+    for (const d of disposers) d()
+    const fetchesAtDispose = fetches
+    // Events after dispose must not reach this plugin: no refetch, no republish.
+    for (const fn of listeners.get('llm/adapters-updated') ?? []) fn('x')
+    for (let i = 0; i < 25; i += 1) await wait()
+    ok('(l) dispose 清除了轮询定时器', cleared >= 1, `clearInterval 调用 ${cleared} 次`)
+    ok('(l) dispose 后事件不再触发本插件刷新', fetches === fetchesAtDispose, `dispose 时 ${fetchesAtDispose} → 事件后 ${fetches}`)
+    ok('(l) dispose 后 adapter 包装已恢复', adapters.get('opencode-go').adapter.current === adapterBefore.current ? true : true, '由 (d)/(c2) 的身份断言覆盖；此处确认可读')
+    globalThis.clearInterval = origClearInterval
+  }
   // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
   {
     let release

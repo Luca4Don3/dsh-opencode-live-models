@@ -1,0 +1,2 @@
+P0_WATCH {"seq":1,"at":"2026-10-15T18:54:15.647Z","providers":["opencode","opencode-go"],"counts":{"opencode":73,"opencode-go":30}}
+P0_WATCH {"seq":2,"at":"2026-10-15T18:54:17.652Z","providers":["opencode","opencode-go"],"counts":{"opencode":84,"opencode-go":34}}
