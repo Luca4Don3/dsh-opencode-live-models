@@ -311,3 +311,70 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 已执行：宿主版本/进程/模块导入核对、首轮 17 个内存诊断、20 个真实服务隔离诊断、P0-E2E-CODEX 真实授权与 4 次模型对照请求、真实刷新与双进程并发刷新、认证优先级与生命周期验证、独立 Node 对诊断脚本的 --check、git diff --check。现有插件全量 probe、正式 Desktop profile 的 GUI 与真实额度 UI 未执行；没有功能改动，不能把源码不变写成运行时回归测试通过。
 
 **验收结论：P0 总门禁 BLOCKED（OpenAI ChatGPT OAuth 不兼容 + 真实插件生命周期未完整验收）；P0-CODEX 认证链路与 429 额度耗尽场景 PASS、正常推理 NOT TESTED；原生 openai 交接方案 INCOMPATIBLE。DSH 官方代码与安装包保持不变。**
+
+## 14. P0-Q：额度查询兼容性验证（独立只读研究）
+
+执行日期：2026-10-15。范围：只读研究 + 真实账号只读查询实测。**不放行 P1**；与第 12 节的推理 E2E 相互独立。
+
+### 14.1 参考体系（三层）
+
+| 层 | 参考 | 用途 |
+|---|---|---|
+| 数据协议首要参考 | OpenAI Codex CLI（`backend-client/rate_limit_resets.rs`、`codex-api/rate_limits.rs`、TUI 展示代码） | 额度查询路径、窗口结构、`allowed` 语义、Credits/重置、滚动 Headers |
+| 认证与调用集成 | Pi（`earendil-works/pi`，本机 Pi-AI 0.87.1） | OAuth 凭据、原生刷新（复用 E07 路径）、模型调用 |
+| 跨厂商归一化 | `specode/pi-subscription-usage`（MIT） | QuotaWindow/ProviderQuota 归一化、`wham/usage` 实测请求方式、凭据脱敏 |
+
+Codex CLI 源码证实 ChatGPT 后端查询路径为 `{base}/wham/usage`（`PathStyle::ChatGptApi`），另有 `/wham/rate-limit-reset-credits`；`ordinary_usage_allowed` 取自响应中 `allowed` 字段，非 HTTP 状态码推断。pi-subscription-usage 证实该端点必须使用 **Codex OAuth**（Sign in with ChatGPT token 会被 401 拒绝）、仅向官方 origin 发送凭据、错误与响应体脱敏。
+
+### 14.2 实测（真实账号、隔离 profile）
+
+隔离 profile（`codex-quota`，仅 credentials/authorization/llm-pi-ai）+ 只读插件（仅两个 GET，无推理、无重置消费）。浏览器授权成功后同进程执行查询，随后用已存凭据再次独立查询，两次均 **200/200**。
+
+归一化结果（脱敏证据：[docs/validation/p0-q/](<<server_path>/Workspace/dsh-opencode-live-models/docs/validation/p0-q/>)）：
+
+| 字段 | 实测值 |
+|---|---|
+| planType | plus |
+| status / usageAllowed / limit_reached | **exhausted / false / true** |
+| primary（5 小时窗口，durationMinutes=300） | usedPercent **100**，remainingPercent 0，resetsAt=1792064732 |
+| secondary（周窗口，durationMinutes=10080） | usedPercent **16**，remainingPercent 84，resetsAt=1792651532 |
+| model_usage | `gpt-6-astra`：available=false、credits_would_enable=true |
+| credits | has_credits=false、unlimited=false |
+| rate_limit_reset_credits | available_count=1、applicable_available_count=1 |
+
+### 14.3 与 429 的交叉验证（数据准确性关键证据）
+
+**5 小时窗口 100% + allowed=false ↔ 模型调用 429**：第 12 节的 429 与账号额度接口的真实状态一致，双向印证。
+
+**周窗口仅用 16%（84% 剩余）**：单看 429 会误判“全部耗尽”。这实证了既定原则——**429 只能作为“当前受限”状态证据，百分比与重置时间必须来自额度接口**。
+
+### 14.4 真实响应结构（35 个字段路径，实测）
+
+顶层：`user_id`、`account_id`、`email`、`plan_type`；额度域 `rate_limit`（`allowed`、`limit_reached`、`primary_window`/`secondary_window` 各含 `used_percent`、`limit_window_seconds`、`reset_after_seconds`、`reset_at`）；`code_review_rate_limit`、`additional_rate_limits`（本账号为空）；模型专属 `model_usage.<slug>.{available,available_at,credits_would_enable}`；`credits.{has_credits,unlimited,overage_limit_reached,balance,approx_local_messages,approx_cloud_messages}`；`spend_control.{reached,individual_limit}`；`rate_limit_reached_type.{type,details}`；`rate_limit_upsell.{banner_type,title,description,ctas,reset_at,referral,request_url}`；`promo`；`rate_limit_reset_credits.{available_count,applicable_available_count}`。
+
+**与 Codex CLI 的结构对照**：CLI 解析器接受嵌套于其内部 struct 的同名字段（`primary_window`/`allowed`/`limit_reached` 命名一致）；实测 JSON 为顶层 `rate_limit.*`。插件实现必须按实测结构解析，嵌套层级不可照搬 Rust 类型。首轮解析器误按 `rate_limits.primary.primary_window` 取值导致 groups 为空并误报 available——随即按实测结构修正，二次查询正确输出 exhausted 与两窗口百分比，印证「不凭状态码或假设结构推算」。
+
+### 14.5 额外发现（纳入后续设计）
+
+1. `usageAllowed` 与百分比独立：`allowed=false` 直接对应“当前受限”，无需推算。
+2. 模型专属额度（`model_usage`）带 `credits_would_enable`——“补充 credits 可解锁”的引导语义，对应 CLI 的 upsell 展示。
+3. `rate_limit_reset_credits` 区分 `available_count` 与 `applicable_available_count`（“可用”与“实际可用”两层计数），与 CLI 的 Resets Left 语义一致。
+4. `rate_limit_upsell` 携带完整引导文案与 `reset_at`，可直接驱动 UI 告警/重置倒计时；`spend_control` 为独立限额域。
+5. 响应含 `email`/`account_id` 等身份字段：展示层需按多账号隔离与脱敏处理（本研究仅保留哈希）。
+
+### 14.6 遵守项与过程教训
+
+- **只读**：仅两个 GET；未发推理请求、未消费任何 reset credit；凭据文件 0600 隔离存放，Token/邮箱/授权 URL 未进入任何输出或归档。
+- 授权过程两次外部阻塞均如实记录：① 授权流程 60 秒超时导致回调服务先于浏览器回调关闭（已改为 10 分钟窗口）；② `auth.openai.com` 同意页 Cloudflare managed challenge（403）为 OpenAI 侧风控，与插件实现无关。
+- 刷新复用 Pi-AI 原生 `getAuth`（同 E07），未自写 OAuth 协议。
+
+### 14.7 门禁影响
+
+| 门禁 | 结果 |
+|---|---|
+| P0-Q（额度查询研究） | **PASS**：真实账号 `wham/usage` 与 reset-credits 均 200，结构与归一化经交叉验证 |
+| P0-CODEX | 认证链路与 429 额度场景 PASS；正常推理 200 仍 NOT TESTED（5h 窗口重置后可补） |
+| P0-OPENAI | INCOMPATIBLE（不变） |
+| P0 总门禁 | **BLOCKED**（不变） |
+
+P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi/Grok 等适配器与 UI、缓存、多账号等均属后续独立阶段，未在本轮实施。
