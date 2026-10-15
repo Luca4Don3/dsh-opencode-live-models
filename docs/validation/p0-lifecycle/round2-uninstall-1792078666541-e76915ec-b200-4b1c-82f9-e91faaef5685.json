@@ -1,0 +1,16 @@
+{
+  "stage": "P0-10",
+  "label": "round2-uninstall",
+  "endedAt": "2026-10-15T15:37:46.541Z",
+  "providers": [
+    "opencode",
+    "opencode-go"
+  ],
+  "counts": {
+    "opencode": 73,
+    "opencode-go": 30
+  },
+  "settledAfterMs": 0,
+  "samplesTaken": 1,
+  "note": "read-only observer; real Loader composition; no model requests sent"
+}

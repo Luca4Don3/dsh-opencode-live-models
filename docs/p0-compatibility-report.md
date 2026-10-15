@@ -54,7 +54,7 @@
 | P0-07 实际请求认证 | INCOMPATIBLE（openai）；真实 E2E BLOCKED | T 系列请求边界验证；S10/S11/S17 在真实服务组合中确认 Codex 账号/凭据来源 | 所有 HTTP 均为 mock，服务端未接受任何测试请求 |
 | P0-08 刷新 | BLOCKED（真实账号/多进程） | S11：模拟旋转后的 grant 真正落盘并重载；S20：两套原生 adapter 通过真实文件锁只刷新一次 | 同进程两实例不等于多进程；真实 Token 与 DSH 重启未测 |
 | P0-09 插件 UI/额度入口 | BLOCKED（浏览器集成未测） | Models 两个 Slot 和 settings.section 声明存在；S18/S19 验证纯 SlotCore 声明/撤销/订阅 | 未安装 client bundle，未在现有 GUI 渲染或发起额度请求 |
-| P0-10 生命周期 | BLOCKED（真实插件生命周期未验证） | S08/S09/S13/S16 通过真实 Fiber 验证服务/监听器/flow 撤销与取消；S18/S19 纯 UI 注册清理 | 完整 profile 卸载、HMR、React、定时器和进行中额度查询静默期未测 |
+| P0-10 生命周期 | BLOCKED（部分真实证据已取得） | S08/S09/S13/S16 真实 Fiber 撤销；S18/S19 纯 UI 注册；**第 15 章真实 Loader 三轮 install/uninstall/reinstall（84/34 → 73/30 → 84/34）PASS** | HMR 运行时热重载、disabled 配置态、进行中额度查询取消、React/UI 层仍未测 |
 
 ## 4. P0-02：当前 OpenAI 不支持 OAuth 的直接证据
 
@@ -434,3 +434,40 @@ P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi
 4. 历史证据 JSON 保留原值（不篡改原始输出），以本节为准。
 
 **解析回归测试（问题 B）**：真实响应结构已固化为脱敏 Fixture（`docs/validation/fixtures/`：Codex 耗尽/充足/缺窗口、OpenCode Go），配套纯函数测试 `docs/validation/quota-parse.test.mjs`（无网络、无凭据、无 DSH），**12/12 PASS**，覆盖：`allowed=false` 保留、主窗口 100% 判 exhausted、次窗口 16% 保留 84% 剩余、缺窗口判 unknown、裸 429 不产生百分比、Credits 与窗口不混算、空账号键 identity-unverified、Go 三窗口与 windowMinutes 钉死、Go rate-limited 窗口保留百分比。运行命令：`node docs/validation/quota-parse.test.mjs`。该测试作为未来 dsh-subscription-usage 解析器的种子与 CI 门禁基线。
+
+## 15. P0-10 补测：真实 Loader 生命周期与多账号隔离
+
+执行日期：2026-10-15。范围：真实 DSH Loader 组合（官方 `dsh --profile`、隔离 DSH_HOME、bundle link、无代理直连）+ 合成多账号隔离断言。不改 DSH；不改生产插件逻辑（测试与验证材料范畴）。
+
+### 15.1 真实 Loader 安装/卸载/重装三轮（main 快照插件）
+
+方法：`git archive main` 提取生产插件快照为 link bundle；隔离 profile 只装 `llm`、`llm-pi-ai`（opencode-go/opencode 两路由）与只读观察器；三轮仅切换 profile 的 `bundles` 数组（真实卸载/安装语义），每轮独立 DSH 进程。
+
+| 轮次 | opencode | opencode-go | 结论 |
+|---|---|---|---|
+| round1 install | 84 | 34 | overlay 生效（3.5s 后稳定） |
+| round2 uninstall | **73** | **30** | **回落到内置基线，卸载后无 overlay 残留** |
+| round3 reinstall | 84 | 34 | 重装再次生效（7.0s 稳定） |
+
+providers 在三轮中均为 `[opencode, opencode-go]`，观察器退出正常，无 `failed to import`/`did not activate`。证据：[docs/validation/p0-lifecycle/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle/>)。
+
+**这补上了第 3 章 P0-10 缺失的「真实 profile 安装/卸载/重装」项**；仍未覆盖：HMR 运行时热重载、`disabled` 配置态、进行中的额度请求取消、React/UI 层。
+
+### 15.2 多账号隔离（合成层，T17–T19）
+
+两组不同账号标识：各自生成**不同**的验证键（T17）；切换账号产生新键、无跨账号复用（T18）；空标识一律 `identity-unverified` 且**不产生任何键**，不可能与任何账号碰撞（T19）。`quota-parse.test.mjs` 现共 **19 条断言，全部 PASS**。
+
+**真实第二账号切换未测**：当前只有单一测试账号；Codex 侧 `account_id` 返回空字符串（见 14.12），真实账号身份识别须在引擎实现时用 `identity-unverified` 降级路径与双账号实测补足。
+
+### 15.3 注册竞态与请求取消的覆盖矩阵
+
+| 风险 | 覆盖 | 状态 |
+|---|---|---|
+| 重复 adapters-updated 叠加 hook | probe (c2) | PASS（main 既有） |
+| 新实例先挂、旧实例后卸载（不得互拆） | probe (f) | PASS（main 既有） |
+| 同一模块二次 apply 吞首轮刷新 | probe (h) | PASS（main 既有） |
+| 卸载后在途结果不回写 | probe (d) | PASS（main 既有） |
+| 旧实例晚归结果不覆盖新实例 | probe (e) | PASS（main 既有） |
+| 卸载时主动 abort 在途 fetch | probe (i)（**PR #4 分支 `feat/abort-inflight-requests`**） | PASS（176/176），待合入 main |
+
+probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader 实测共同构成本轮生命周期证据；HMR/watch 场景仍属未测。
