@@ -1,0 +1,23 @@
+- insert:
+    - id: timer
+      name: '@deepseek-ai/cordis-plugin-timer'
+- insert:
+    - id: llm
+      name: '@deepseek-ai/dsh-llm'
+    - id: llm-pi-ai
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          opencode-go: {}
+          opencode: {}
+    - id: hmr
+      name: '@deepseek-ai/dsh-hmr'
+      config:
+        root: []
+    - id: p0-hmr-watch-observer
+      name: dsh-p0-hmr-watch-observer
+      config:
+        sampleMs: 1000
+
+- id: opencode-live-models
+  disabled: true
