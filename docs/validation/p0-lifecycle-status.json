@@ -46,5 +46,15 @@
     "P0_OPENAI": "INCOMPATIBLE",
     "P0_TOTAL": "BLOCKED",
     "P0_10": "PARTIAL_REAL_EVIDENCE_BLOCKED_REMAINDER"
+  },
+  "acceptanceWording": {
+    "uninstallClaim": "independent Loader process falls back to installed baseline; same-process unload NOT TESTED",
+    "accountKeys": "PASS (synthetic)",
+    "accountCacheIsolation": "NOT TESTED (engine not built)",
+    "packageJson": "test script only; runtime entry and model logic unchanged"
+  },
+  "reproduction": {
+    "observer": "docs/validation/p0-lifecycle-observer.mjs",
+    "note": "profile scaffolding is regenerable from chapter 15 method + repo scripts"
   }
 }

@@ -286,7 +286,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 | E07 Token 刷新 | PASS | 以公开 `minOAuthValidityMs` 触发（未改存储过期时间）：refresh 端点 **200**、凭据旋转、记录仍为 OAuth、刷新后凭据直接用于后续请求 |
 | E08 重启恢复 | PASS（隔离 profile 范围） | 多个**全新 DSH 进程**从磁盘恢复同一 grant 并发起请求；`desktopRestarted=false`，未重启正式 Desktop |
 | E09 多进程并发 | PASS | 两独立 DSH 进程同秒触发刷新：仅 1 次真实 refresh POST，另一进程经文件锁二次检查复用已旋转凭据；无重复刷新、无覆盖损坏、无跨账号 |
-| E10 进程清理与零宿主影响（限定范围 PASS） | PASS（限定范围） | 验证进程全部退出：无残留 `dsh --profile codex-e2e` 进程、1455 回调端口空；正式插件运行文件（lib/、probe.mjs、package.json、cordis.patch.yml）零 diff；参考仓库干净；宿主 asar SHA 与第 2 节一致。**这不等同于真实插件的安装/禁用/卸载/HMR 验收，后者仍属第 3 章 P0-10 的 BLOCKED 项** |
+| E10 进程清理与零宿主影响（限定范围 PASS） | PASS（限定范围） | 验证进程全部退出：无残留 `dsh --profile codex-e2e` 进程、1455 回调端口空；运行入口与模型逻辑（lib/、probe.mjs、cordis.patch.yml）零 diff（package.json 仅追加 test 脚本接入额度测试，运行行为未变）；参考仓库干净；宿主 asar SHA 与第 2 节一致。**这不等同于真实插件的安装/禁用/卸载/HMR 验收，后者仍属第 3 章 P0-10 的 BLOCKED 项** |
 
 ### 12.3 期间暴露的真实事实
 
@@ -306,7 +306,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 ## 13. 修改与检查记录
 
-只新增本报告与验证材料：两份隔离诊断脚本及脱敏结果、证据摘要、P0-E2E-CODEX 状态与 16 份脱敏证据归档；临时 profile/验证 bundle 位于被忽略的临时目录，待确认后删除。插件运行入口、依赖清单、bundle patch 与现有模型逻辑未改动，未提交、未 push、未发布。
+只新增本报告与验证材料：诊断脚本与脱敏结果、证据摘要、E2E/P0-Q/P0-10 状态与归档、Fixture 与回归测试、生命周期观察器；临时 profile/验证 bundle 位于被忽略的临时目录，按 Trash 流程清理。**插件运行入口（lib/index.js）、模型逻辑与 bundle patch 未改动**；package.json 仅修改 test 脚本（`node probe.mjs && node docs/validation/quota-parse.test.mjs`）以使额度断言成为 CI 门禁，依赖清单未动。
 
 已执行：宿主版本/进程/模块导入核对、首轮 17 个内存诊断、20 个真实服务隔离诊断、P0-E2E-CODEX 真实授权与 4 次模型对照请求、真实刷新与双进程并发刷新、认证优先级与生命周期验证、独立 Node 对诊断脚本的 --check、git diff --check。现有插件全量 probe、正式 Desktop profile 的 GUI 与真实额度 UI 未执行；没有功能改动，不能把源码不变写成运行时回归测试通过。
 
@@ -446,16 +446,18 @@ P0-Q 结论仅覆盖 OpenAI Codex 的额度查询只读链路；OpenCode Go/Kimi
 | 轮次 | opencode | opencode-go | 结论 |
 |---|---|---|---|
 | round1 install | 84 | 34 | overlay 生效（3.5s 后稳定） |
-| round2 uninstall | **73** | **30** | **回落到内置基线，卸载后无 overlay 残留** |
+| round2 uninstall | **73** | **30** | **独立 Loader 进程在移除插件配置后正确回落内置基线**（同进程卸载无残留仍需单独验证） |
 | round3 reinstall | 84 | 34 | 重装再次生效（7.0s 稳定） |
 
 providers 在三轮中均为 `[opencode, opencode-go]`，观察器退出正常，无 `failed to import`/`did not activate`。证据：[docs/validation/p0-lifecycle/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle/>)。
 
-**这补上了第 3 章 P0-10 缺失的「真实 profile 安装/卸载/重装」项**；仍未覆盖：HMR 运行时热重载、`disabled` 配置态、进行中的额度请求取消、React/UI 层。
+**这补上了第 3 章 P0-10 缺失的「真实 profile 安装/卸载/重装」项——但三轮均为独立 DSH 进程，只证明跨进程的配置切换正确性**。仍未覆盖：**同一运行中进程的卸载**（原型包装恢复、旧监听器与定时器消除、旧异步任务不影响新实例）、HMR 运行时热重载、`disabled` 配置态、进行中的额度请求取消、React/UI 层。复现观察器脚本见 [docs/validation/p0-lifecycle-observer.mjs](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-lifecycle-observer.mjs>)。
 
 ### 15.2 多账号隔离（合成层，T17–T19）
 
 两组不同账号标识：各自生成**不同**的验证键（T17）；切换账号产生新键、无跨账号复用（T18）；空标识一律 `identity-unverified` 且**不产生任何键**，不可能与任何账号碰撞（T19）。`quota-parse.test.mjs` 现共 **19 条断言，全部 PASS**。
+
+**结论分列**：账号键生成规则 = **PASS**（合成层）；多账号缓存隔离 = **NOT TESTED**（正式额度引擎尚未开发，T17–T19 只验证 `accountKeyOf()` 纯函数）。
 
 **真实第二账号切换未测**：当前只有单一测试账号；Codex 侧 `account_id` 返回空字符串（见 14.12），真实账号身份识别须在引擎实现时用 `identity-unverified` 降级路径与双账号实测补足。
 
