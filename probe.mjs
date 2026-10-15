@@ -2066,6 +2066,49 @@ freshState()
       `contextWindow ${after?.contextWindow} / maxTokens ${after?.maxTokens}`)
   }
 
+  // (i) 卸载时主动 abort 在途 fetch：请求不应再占用连接至超时
+  {
+    let sawSignal = null
+    let aborted = false
+    globalThis.fetch = async (url, init) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/')) {
+        sawSignal = init?.signal ?? null
+        return await new Promise((_, reject) => {
+          const die = () => { aborted = true; reject(new DOMException('The operation was aborted.', 'AbortError')) }
+          if (init?.signal?.aborted) return die()
+          init?.signal?.addEventListener('abort', die, { once: true })
+        })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const coll = makeColl('opencode-go', () => INSTALLED.slice())
+    const adapters = collAdapter(coll)
+    globalThis.setInterval = () => ({ unref() {} })
+    const disposers = []
+    const sLogs = []
+    freshState()
+    const mod = await import('./lib/index.js?abort-inflight')
+    await mount(mod, {
+      llm: { adapters },
+      logger: { info: () => {}, warn: (...a) => sLogs.push(a.join(' ')), debug: () => {} },
+      emit: () => {},
+      effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+      on: () => {},
+    })
+    await wait(); await wait(); await wait(); await wait()
+    const inFlight = sawSignal !== null
+    for (const d of disposers) d()
+    const abortedByUnload = aborted || sawSignal?.aborted === true
+    ok('在途 fetch 在卸载时收到 abort', inFlight && abortedByUnload,
+      `已发起=${inFlight}，已 abort=${abortedByUnload}`)
+    ok('卸载后该挂起请求未产生错误刷屏', sLogs.filter(l => l.includes('refresh failed')).length === 0,
+      sLogs.find(l => l.includes('refresh failed'))?.slice(0, 100) ?? '无')
+  }
+
   // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
   {
     let release
