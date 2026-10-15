@@ -1,0 +1,40 @@
+{
+  "stage": "P0-E05B",
+  "action": "login-call",
+  "endedAt": "2026-10-15T19:14:53.770Z",
+  "gates": {
+    "P0_CODEX": "E05B_CANDIDATE_PASS",
+    "P0_OPENAI": "INCOMPATIBLE",
+    "P0_TOTAL": "BLOCKED"
+  },
+  "evidence": {
+    "e05b": {
+      "status": "PASS",
+      "model": "gpt-6-sol",
+      "serverAcceptedOAuth": true,
+      "completedResponse": true,
+      "markerMatched": true,
+      "responseCharacters": 43,
+      "responseSha256": "9eb43f38f14a2040cd0cbe0baa7cf245c5e315e43b9977240db427d48d580603",
+      "usageReceived": true,
+      "streamChunks": 31
+    }
+  },
+  "network": [
+    {
+      "kind": "model",
+      "endpoint": "https://chatgpt.com/backend-api/codex/responses",
+      "method": "POST",
+      "provider": "openai-codex",
+      "protocol": "openai-codex-responses",
+      "authentication": "stored-oauth-exact-match",
+      "sameAccount": true,
+      "status": 200
+    }
+  ],
+  "redaction": {
+    "tokenOmitted": true,
+    "markerBodyOmitted": true
+  },
+  "notes": "real browser OAuth (when login-call), real model response over native Pi-AI Codex transport; one short marker inference"
+}
