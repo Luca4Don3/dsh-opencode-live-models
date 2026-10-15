@@ -2172,6 +2172,10 @@ freshState()
     await wait(); await wait(); await wait()
     releaseGo()
     for (let i = 0; i < 30; i += 1) await wait()
+    ok('(j) Zen 的目录与名单均被刷新', fetched.zenCatalog >= 1 && fetched.zenRoster >= 1,
+      `zenCatalog=${fetched.zenCatalog}，zenRoster=${fetched.zenRoster}`)
+    ok('(j) Zen 最终发布叠加后的目录', zenColl.mergedModels().length > zenInstalled.length,
+      `发布 ${zenColl.mergedModels().length} 条（installed 基线 ${zenInstalled.length}）`)
     ok('(j) Go 在途时新注册的 Zen 被立即刷新，而非被 join 吞掉',
       goInFlight && fetched.zenCatalog > 0,
       `goInFlight=${goInFlight}，zenCatalog=${fetched.zenCatalog}（期望 >=1）`)
@@ -2179,6 +2183,91 @@ freshState()
       fetched.goRoster >= 1 && sLogs.filter(l => l.includes('refresh failed')).length === 0,
       `goRoster=${fetched.goRoster}，${sLogs.find(l => l.includes('refresh failed'))?.slice(0, 220) ?? '无失败'}`)
     for (const d of disposers) d()
+  }
+  // (k) 跨代补查：旧实例的 joined 回调不得用旧 ctx 发起新刷新
+  {
+    const zenDirectory = fixture('pi-dev-opencode.json')
+    const zenLive = fixture('zen-models.json').data
+    const zenRaw = fixture('opencode-0.87.1.json')
+    const zenInstalled = []
+    for (const models of Object.values(zenRaw)) zenInstalled.push(...Object.values(models))
+    let releaseA
+    const gateA = new Promise(r => { releaseA = r })
+    const counts = { go: 0, zen: 0 }
+    globalThis.fetch = async (url) => {
+      const u = String(url)
+      if (u.startsWith('https://pi.dev/api/models/providers/opencode-go')) {
+        counts.go += 1
+        if (counts.go === 1) await gateA
+        return new Response(JSON.stringify(PI_DEV), { status: 200 })
+      }
+      if (u.startsWith('https://pi.dev/api/models/providers/opencode?')) {
+        counts.zen += 1
+        return new Response(JSON.stringify(zenDirectory), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/go/v1/models')) {
+        return new Response(JSON.stringify({ data: LIVE_IDS.map(id => ({ id })) }), { status: 200 })
+      }
+      if (u.startsWith('https://opencode.ai/zen/v1/models')) {
+        return new Response(JSON.stringify({ data: zenLive.map(m => ({ id: m.id })) }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch: ${u}`)
+    }
+    const goColl = makeColl('opencode-go', () => INSTALLED.slice())
+    const zenColl = makeColl('opencode', () => zenInstalled)
+    globalThis.setInterval = () => ({ unref() {} })
+    const mkCtx = (logs) => {
+      const listeners = new Map()
+      const disposers = []
+      return { listeners, disposers, ctx: {
+        llm: { adapters: null },
+        logger: { info: () => {}, warn: (...a) => logs.push(a.join(' ')), debug: () => {} },
+        emit: (ev) => { for (const fn of listeners.get(ev) ?? []) fn(ev) },
+        effect: fn => { const d = fn(); if (typeof d === 'function') disposers.push(d) },
+        on: (ev, fn) => { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(fn) },
+      } }
+    }
+    const a = mkCtx([])
+    const adaptersA = new Map()
+    adaptersA.set('opencode-go', { adapter: { current: () => ({ models: goColl }) } })
+    a.ctx.llm.adapters = adaptersA
+    freshState()
+    const modA = await import('./lib/index.js?genA')
+    await mount(modA, a.ctx)
+    // Emit once to create A's pass deterministically (the automatic pass waits on
+    // fs I/O, which microtask waits do not observe), then join that pass.
+    for (const fn of a.listeners.get('llm/adapters-updated') ?? []) fn('x')
+    let guard = 0
+    while (counts.go === 0 && guard < 40) { await wait(); guard += 1 }
+    // Register Zen first: the adapters-updated handler only refreshes scopes
+    // that *appeared*, so the joining call must carry a new scope.
+    adaptersA.set('opencode', { adapter: { current: () => ({ models: zenColl }) } })
+    for (const fn of a.listeners.get('llm/adapters-updated') ?? []) fn('x')
+    await wait(); await wait(); await wait(); await wait(); await wait()
+    // Join is only real if the second call reused the in-flight pass: a create
+    // would have fired another catalog fetch, so counts.go staying 1 proves the
+    // late-check callback is now bound to the gated pass.
+    const joinedWhileInFlight = counts.go === 1 && counts.zen === 0
+    const b = mkCtx([])
+    const adaptersB = a.ctx.llm.adapters
+    adaptersB.set('opencode', { adapter: { current: () => ({ models: zenColl }) } })
+    b.ctx.llm.adapters = adaptersB
+    const modB = await import('./lib/index.js?genB')
+    await mount(modB, b.ctx)
+    for (const fn of b.listeners.get('llm/adapters-updated') ?? []) fn('x')
+    for (let i = 0; i < 40 && counts.zen === 0; i += 1) await wait()
+    for (let i = 0; i < 8; i += 1) await wait()
+    const afterB = { go: counts.go, zen: counts.zen }
+    releaseA()
+    for (let i = 0; i < 30; i += 1) await wait()
+    ok('(k) join 时 A 的刷新确实仍在途（回调尚未提前触发）', joinedWhileInFlight,
+      `join 后 go=${counts.go > 0 ? counts.go : 0}（应为 1），zen=0；前置不成立则本场景无意义`)
+    ok('(k) 新实例接管后，旧实例的晚归补查回调不发起任何刷新',
+      counts.go === afterB.go && counts.zen === afterB.zen,
+      `接管后 go=${afterB.go}/zen=${afterB.zen}，旧回调后 go=${counts.go}/zen=${counts.zen}（应不变）`)
+    ok('(k) B 实例自身刷新已完成', afterB.zen >= 1, `zen=${afterB.zen}`)
+    for (const d of a.disposers) d()
+    for (const d of b.disposers) d()
   }
   // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
   {
