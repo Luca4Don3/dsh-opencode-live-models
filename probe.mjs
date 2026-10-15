@@ -2105,8 +2105,14 @@ freshState()
     const abortedByUnload = aborted || sawSignal?.aborted === true
     ok('在途 fetch 在卸载时收到 abort', inFlight && abortedByUnload,
       `已发起=${inFlight}，已 abort=${abortedByUnload}`)
+    // The abort is synchronous, the consequences are not: let the rejected
+    // fetch, the allSettled, and the refresh tail finish before judging log
+    // noise, so an async failure cannot hide behind an early assertion.
+    for (let i = 0; i < 6; i += 1) await wait()
     ok('卸载后该挂起请求未产生错误刷屏', sLogs.filter(l => l.includes('refresh failed')).length === 0,
       sLogs.find(l => l.includes('refresh failed'))?.slice(0, 100) ?? '无')
+    ok('卸载后异步收尾已静默完成（刷新槽清空后无追加日志）',
+      sLogs.filter(l => l.includes('refresh failed')).length === 0)
   }
 
   // (h) 同一模块对象二次 apply：首轮刷新不得被上一代的 in-flight 吞掉
