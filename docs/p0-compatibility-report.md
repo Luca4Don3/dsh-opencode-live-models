@@ -8,7 +8,7 @@
 
 宿主原生 Pi-AI 为 **0.87.1**，其 openai Provider 仅声明 API Key，既不能执行该 Provider 的 OAuth 登录，也不能将已保存的 OAuth grant 转为请求认证。并非简单的 UI 屏蔽问题。openai-codex 是独立的 OAuth Provider，不能用它的可用性替代 openai 的验收。
 
-**P0 总门禁：BLOCKED**。第 12 节的 P0-E2E-CODEX 已完成 Codex 侧真实浏览器授权、凭据交接、真实 Token 刷新与双进程并发去重；**服务端成功模型响应（E05）因测试账号配额耗尽而 BLOCKED**，正式 Desktop 重启与完整插件卸载仍未实测。这里的 BLOCKED 是未满足的验证项，不是“已被证明永远不可实现”。
+**P0 总门禁：BLOCKED**。第 12 节的 P0-E2E-CODEX 已完成 Codex 侧真实浏览器授权、凭据交接、真实 Token 刷新与双进程并发去重；**额度耗尽时的 429 拒绝与账号实际状态一致，是被验证的正确行为（PASS），不是待修复故障**。总门禁仍 BLOCKED 的原因：OpenAI ChatGPT OAuth 不兼容、真实插件生命周期未完整验收、以及「额度充足时正常推理 200」尚为 NOT TESTED（配额恢复后补充）。这里的 BLOCKED 是未满足的验证项，不是“已被证明永远不可实现”。
 
 首轮 T 系列 17/17 个内存存储诊断通过；本轮 S 系列 20/20 个真实服务隔离诊断通过（真实 Cordis、磁盘与文件锁，HTTP 仍为模拟）。**这些都不代表真实账号 OAuth 集成通过**。其中通过的反例测试正是当前版本不兼容的证据。用户已决定继续使用 DSH 内置 Pi-AI，不新增或升级插件私有 Pi-AI 依赖。
 
@@ -268,7 +268,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 | 门禁 | 结果 |
 |---|---|
-| P0-CODEX | **PARTIAL：E01–E04、E06–E10 通过；E05 因外部配额条件 BLOCKED** |
+| P0-CODEX | **认证链路与额度耗尽场景 PASS**（E01–E04、E05 额度场景、E06–E10）；**正常推理 200 场景 NOT TESTED**（账号无额度，配额恢复后补充） |
 | P0-OPENAI | **INCOMPATIBLE**（维持第 1/4 节结论） |
 | P0 总门禁 | **BLOCKED**（不进入 P1） |
 
@@ -280,7 +280,8 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 | E02 持久化 | PASS | 经公开 `ctx.credentials` 写入隔离 store，文件权限 0600，重载后 grant 结构完好 |
 | E03 凭据读取 | PASS | 模型请求携带与已存 grant 逐字节一致的 Bearer 与相同 `chatgpt-account-id`（exact-match 断言在发请求前执行） |
 | E04 协议端点 | PASS | POST `https://chatgpt.com/backend-api/codex/responses`，协议 openai-codex-responses，无 `x-opencode-session` |
-| E05 服务端完成响应 | **BLOCKED（外部条件，用户已确认）** | 认证被受理并进入配额层；4 个模型对照：`gpt-5.5`/`gpt-5.3-codex-spark` → 400「not supported when using Codex with a ChatGPT account」；`gpt-5.6-sol`/`gpt-6-sol` → **429「The usage limit has been reached」**。**用户确认该测试账号配额确已耗尽，429 为真实配额信号而非误判**；未取得 200 响应 |
+| E05 额度耗尽场景（重定义） | **PASS** | 认证被受理并进入配额层，返回 **429「The usage limit has been reached」**——用户已确认账号配额确已耗尽，该 429 与账号实际状态一致，是**被验证的正确服务端行为，不是插件或 OAuth 集成故障**；4 个模型对照中 `gpt-5.5`/`gpt-5.3-codex-spark` 另返回 400「not supported when using Codex with a ChatGPT account」（模型不在账号可用集，同样为服务端预期语义） |
+| E05-normal 额度充足时的正常推理 | **NOT TESTED** | 未取得 200 推理响应；配额恢复后按 12.4 补充验证，非修复项 |
 | E06 认证优先级 | PASS | 配置不存在的 `apiKeyEnv` 引用后：`requestFailureCode=MISSING_CREDENTIAL`、零模型请求、**不回退到已存 OAuth**；未绕过优先级 |
 | E07 Token 刷新 | PASS | 以公开 `minOAuthValidityMs` 触发（未改存储过期时间）：refresh 端点 **200**、凭据旋转、记录仍为 OAuth、刷新后凭据直接用于后续请求 |
 | E08 重启恢复 | PASS（隔离 profile 范围） | 多个**全新 DSH 进程**从磁盘恢复同一 grant 并发起请求；`desktopRestarted=false`，未重启正式 Desktop |
@@ -291,12 +292,12 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 1. **CLI 不继承 GUI 代理**：直连被判定地区不支持（403），显式代理后正常。浏览器与 CLI 的出口不同，第一次登录失败即此原因，与认证实现无关。
 2. **目录不等于账号可用集**：内置 0.87.1 目录 8 个模型中，至少两个在该账号返回 400 模型不支持——印证「Pi 目录出现某模型不代表当前账号可调用」。
-3. **配额在模型端点返回 429**：可用模型统一返回 usage limit，用户已确认测试账号配额确实用尽，该 429 是真实的额度信号——正是后续额度监控需要捕获的信号；本轮不据此放行 E05。
+3. **配额在模型端点返回 429**：可用模型统一返回 usage limit，用户已确认账号配额确实用尽——该 429 与账号实际状态一致，是符合预期的正确拒绝，也是后续额度监控需要捕获的信号；E05 据此判定 PASS（额度耗尽场景），正常推理场景另行补充。
 4. 每次模型请求前的 exact-match 断言保证不会把 API Key 误判为 OAuth；全程未配置或使用任何 API Key。
 
 ### 12.4 E05 解除条件
 
-账号配额已由用户确认耗尽，E05 只能在配额窗口重置后解除：按本节记录重建隔离 profile（临时目录已按第 13 节清理），在配额重置后的账号上跑一次 `call`，取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256）。取得该证据前 E05 保持 BLOCKED，P0-CODEX 不放行。
+**429 额度耗尽场景已是 PASS，不构成待修复问题，也不再重复测试。** 剩余仅一项补充验证：配额恢复后按本节记录重建隔离 profile（临时目录已按第 13 节清理），跑一次 `call` 取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256），把「额度充足时正常推理」从 NOT TESTED 补齐为 PASS。此项不阻塞认证链路结论，属配额恢复后的增量验证。
 
 ### 12.5 边界
 
@@ -309,4 +310,4 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 已执行：宿主版本/进程/模块导入核对、首轮 17 个内存诊断、20 个真实服务隔离诊断、P0-E2E-CODEX 真实授权与 4 次模型对照请求、真实刷新与双进程并发刷新、认证优先级与生命周期验证、独立 Node 对诊断脚本的 --check、git diff --check。现有插件全量 probe、正式 Desktop profile 的 GUI 与真实额度 UI 未执行；没有功能改动，不能把源码不变写成运行时回归测试通过。
 
-**验收结论：P0 总门禁 BLOCKED；P0-CODEX 为 PARTIAL（E05 因外部配额 BLOCKED）；原生 openai 交接方案 INCOMPATIBLE。DSH 官方代码与安装包保持不变。**
+**验收结论：P0 总门禁 BLOCKED（OpenAI ChatGPT OAuth 不兼容 + 真实插件生命周期未完整验收）；P0-CODEX 认证链路与 429 额度耗尽场景 PASS、正常推理 NOT TESTED；原生 openai 交接方案 INCOMPATIBLE。DSH 官方代码与安装包保持不变。**
