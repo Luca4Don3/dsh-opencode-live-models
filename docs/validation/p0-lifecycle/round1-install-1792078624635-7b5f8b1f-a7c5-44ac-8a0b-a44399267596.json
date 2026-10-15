@@ -1,0 +1,16 @@
+{
+  "stage": "P0-10",
+  "label": "round1-install",
+  "endedAt": "2026-10-15T15:37:04.635Z",
+  "providers": [
+    "opencode",
+    "opencode-go"
+  ],
+  "counts": {
+    "opencode": 84,
+    "opencode-go": 34
+  },
+  "settledAfterMs": 3513,
+  "samplesTaken": 2,
+  "note": "read-only observer; real Loader composition; no model requests sent"
+}

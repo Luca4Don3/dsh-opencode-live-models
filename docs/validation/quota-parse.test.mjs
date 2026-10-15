@@ -80,5 +80,13 @@ ok('T14 explicit denial, no windows => exhausted with unknown percents',noWin.st
 // T16: percent-only exhaustion fallback (no allowed field)
 const pctOnly=normalizeCodex({rate_limit:{primary_window:{used_percent:100,limit_window_seconds:18000}}},{httpStatus:200});
 ok('T16 no allowed field, primary 100% => exhausted fallback',pctOnly.status==='exhausted');
+// T17-T19: account isolation rules (synthetic two-account switch)
+const accA=accountKeyOf('acct-real-alpha-1'), accB=accountKeyOf('acct-real-beta-2');
+ok('T17 two accounts produce distinct verified keys', accA.identity==='verified'&&accB.identity==='verified'&&accA.accountKey!==accB.accountKey);
+const beforeSwitch=accountKeyOf('acct-real-alpha-1').accountKey;
+const afterSwitch=accountKeyOf('acct-real-beta-2').accountKey;
+ok('T18 account switch yields a new cache key (no cross-account reuse)', beforeSwitch!==afterSwitch);
+const empty=accountKeyOf('');
+ok('T19 empty id yields no key at all (cannot collide with any account)', empty.identity==='identity-unverified'&&empty.accountKey===undefined);
 console.log(failed===0?'ALL_PASS':'FAILED '+failed);
 if(failed>0)process.exit(1);
