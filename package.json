@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "node probe.mjs"
+    "test": "node probe.mjs && node docs/validation/quota-parse.test.mjs"
   },
   "main": "lib/index.js",
   "exports": {
