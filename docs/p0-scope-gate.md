@@ -1,4 +1,4 @@
-# 限定范围实施门禁：Codex + OpenCode Go 额度插件（草案，待批准）
+# 限定范围实施门禁：Codex + OpenCode Go 额度插件（已批准）
 
 状态：**已批准**（2026-10-16，用户明确确认限定范围：仅 Codex + OpenCode Go 的独立额度插件）。批准范围依据本文十项验收；**P0 总门禁保持 BLOCKED**，openai 不兼容项不因此关闭；发布前所有 “NOT STARTED/部分” 项必须转 PASS。
 
