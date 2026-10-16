@@ -25,6 +25,8 @@ The `github:` spec downloads over HTTPS from codeload.github.com; an npm mirror 
 
 Requires DSH 0.1.5-rc.1 or newer, and **0.3.0 or newer of this plugin**.
 
+> **0.6.0 aborts in-flight catalog requests on unload, fixes a new provider registered mid-refresh being dropped to the next poll, and guards the late-refresh callback against a cross-generation HMR takeover.** Catalog merging and gateway behavior are unchanged; the probe suite now runs the quota-parser regressions in CI as well.
+>
 > **0.5.0 covers `opencode` (OpenCode Zen) as well as `opencode-go`.** The Zen
 > route used to keep whatever catalog the installed pi-ai shipped with; it is now
 > refreshed from its own Pi catalog and its own live roster, with its own protocol
