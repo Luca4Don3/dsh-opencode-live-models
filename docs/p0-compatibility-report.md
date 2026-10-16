@@ -268,7 +268,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 | 门禁 | 结果 |
 |---|---|
-| P0-CODEX | **认证链路与额度耗尽场景 PASS**（E01–E04、E05 额度场景、E06–E10）；**正常推理 200 场景 NOT TESTED**（账号无额度，配额恢复后补充） |
+| P0-CODEX | **全链路 PASS**（E01–E10 + E05-A 额度拒绝 + E05-B 正常推理 200） |
 | P0-OPENAI | **INCOMPATIBLE**（维持第 1/4 节结论） |
 | P0 总门禁 | **BLOCKED**（不进入 P1） |
 
@@ -281,7 +281,7 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 | E03 凭据读取 | PASS | 模型请求携带与已存 grant 逐字节一致的 Bearer 与相同 `chatgpt-account-id`（exact-match 断言在发请求前执行） |
 | E04 协议端点 | PASS | POST `https://chatgpt.com/backend-api/codex/responses`，协议 openai-codex-responses，无 `x-opencode-session` |
 | E05 额度耗尽场景（重定义） | **PASS** | 认证被受理并进入配额层，返回 **429「The usage limit has been reached」**——用户已确认账号配额确已耗尽，该 429 与账号实际状态一致，是**被验证的正确服务端行为，不是插件或 OAuth 集成故障**；4 个模型对照中 `gpt-5.5`/`gpt-5.3-codex-spark` 另返回 400「not supported when using Codex with a ChatGPT account」（模型不在账号可用集，同样为服务端预期语义） |
-| E05-normal 额度充足时的正常推理 | **NOT TESTED** | 未取得 200 推理响应；配额恢复后按 12.4 补充验证，非修复项 |
+| E05-normal 额度充足时的正常推理 | **PASS** | 配额重置后真实授权 + `gpt-6-sol` marker 推理：**HTTP 200**、marker 精确回显（43 字符，SHA 记录）、usage 齐全、31 chunks 正常结束（证据：docs/validation/p0-e05b/） |
 | E06 认证优先级 | PASS | 配置不存在的 `apiKeyEnv` 引用后：`requestFailureCode=MISSING_CREDENTIAL`、零模型请求、**不回退到已存 OAuth**；未绕过优先级 |
 | E07 Token 刷新 | PASS | 以公开 `minOAuthValidityMs` 触发（未改存储过期时间）：refresh 端点 **200**、凭据旋转、记录仍为 OAuth、刷新后凭据直接用于后续请求 |
 | E08 重启恢复 | PASS（隔离 profile 范围） | 多个**全新 DSH 进程**从磁盘恢复同一 grant 并发起请求；`desktopRestarted=false`，未重启正式 Desktop |
@@ -297,7 +297,9 @@ v0.5.0 现有模型动态更新使用私有 ctx.llm.adapters、adapter.current()
 
 ### 12.4 E05 解除条件
 
-**429 额度耗尽场景已是 PASS，不构成待修复问题，也不再重复测试。** 剩余仅一项补充验证：配额恢复后按本节记录重建隔离 profile（临时目录已按第 13 节清理），跑一次 `call` 取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256），把「额度充足时正常推理」从 NOT TESTED 补齐为 PASS。此项不阻塞认证链路结论，属配额恢复后的增量验证。
+**429 额度耗尽场景已是 PASS，不构成待修复问题，也不再重复测试。**
+
+**E05-B 已于 2026-10-15 补测完成（PASS）**：配额窗口重置后，经隔离 profile 与真实浏览器授权（原生 authorization 流程），`gpt-6-sol` 一次 marker 推理返回 **HTTP 200**，marker 精确回显（43 字符，SHA-256 记录）、usage 齐全、31 chunks 正常 `stop` 结束；请求前逐字节校验 Bearer 与账号头（stored-oauth exact-match），无 OpenCode header。证据：[docs/validation/p0-e05b/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-e05b/>)。P0-CODEX 自此全链路 PASS。 剩余仅一项补充验证：配额恢复后按本节记录重建隔离 profile（临时目录已按第 13 节清理），跑一次 `call` 取得 status 200 与 marker 回显（响应仅记录长度与 SHA-256），把「额度充足时正常推理」从 NOT TESTED 补齐为 PASS。此项不阻塞认证链路结论，属配额恢复后的增量验证。
 
 ### 12.5 边界
 
@@ -501,8 +503,8 @@ probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader �
 | 门禁 | 结果 | 依据章节 |
 |---|---|---|
 | P0-Q 额度查询 | **PASS** | 14（wham/usage、Go usage 200，19 断言 CI 门禁） |
-| P0-CODEX 认证与额度场景 | **PASS**（E05-A：授权/交接/刷新/并发/429 拒绝） | 12 |
-| P0-CODEX 正常推理（E05-B） | **NOT TESTED**（配额恢复后补） | 12.4 |
+| P0-CODEX 认证、额度与推理全链路 | **PASS**（E01–E10 + E05-A + E05-B） | 12/12.4 |
+| P0-CODEX 正常推理（E05-B） | **PASS** | 12.4 补测：gpt-6-sol 200 + marker 回显 |
 | P0-OPENAI ChatGPT OAuth | **INCOMPATIBLE** | 1/4 |
 | **P0 总门禁** | **BLOCKED** | 见 17.2 |
 
@@ -524,9 +526,16 @@ probe 全套（main 基线 174 条）+ PR #4 的 176 条与三轮真实 Loader �
 ### 17.3 P0 总门禁仍 BLOCKED 的具体原因
 
 1. P0-OPENAI 明确 INCOMPATIBLE（宿主 Pi-AI 0.87.1 无 ChatGPT OAuth 能力，红线内无解，保留待宿主升级后复验）。
-2. P0-07 正常推理 200（E05-B）待配额恢复补测。
+2. ~~P0-07 正常推理 200（E05-B）待配额恢复补测~~ → 已于 2026-10-15 补测 PASS（见 12.4）。
 3. P0-09 浏览器 UI 集成未实测。
 4. P0-10 残余：源码级 HMR、React/UI 层、进行中额度请求取消。
 5. 真实多账号缓存隔离 NOT TESTED（引擎未建）。
 
 **以上逐项闭合前，P1（统一额度引擎）不获放行；P0-Q PASS 不改变总门禁。** 本评估不引入任何 DSH 修改或新依赖。
+
+若不愿等待 openai 兼容项（宿主限制、当前无解），可审议**限定范围实施门禁**（Codex + OpenCode Go 两家已验证 Provider 的独立额度插件）：[docs/p0-scope-gate.md](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/p0-scope-gate.md>)——**状态：待用户明确批准，不自动生效**；openai 不兼容项保留在 P0 总门禁中。
+### 16.1 源码级 HMR 实测（P1，结果 NOT ESTABLISHED）
+
+目标：在 hmr 的 `root` 指向插件源码时，修改运行中进程加载的 lib/index.js，观察模块重载。两轮实测（`root` = 真实路径 / loader 加载的 symlink 路径）：配置级监视有效（disabled 切换已由 16 章证明），但源码文件修改后**无任何重载信号**——counts 保持 84/34、无 reload 日志、观察器未重启。
+
+**结论：NOT ESTABLISHED。** 该链路（chokidar 事件 → 分类 → loadCache 归属 → 模块替换）位于宿主 dsh-hmr 内部；在 DSH 零修改红线下不对其做侵入式排查，也不将 link-bundle 隔离环境的失败归因于插件缺陷。证据与驱动脚本归档于 [docs/validation/p0-hmr/](</Users/lucasdone/Workspace/dsh-opencode-live-models/docs/validation/p0-hmr/>)（source-hmr-*）。配置级 HMR（16 章）不受影响，仍为 PASS。

@@ -1,8 +1,8 @@
 {
   "stage": "P0-E2E-CODEX",
-  "updatedAt": "2026-10-15T10:00:41.517Z",
+  "updatedAt": "2026-10-15T19:18:09.251Z",
   "gates": {
-    "P0_CODEX": "AUTH_CHAIN_AND_QUOTA_SCENE_PASS_NORMAL_COMPLETION_NOT_TESTED",
+    "P0_CODEX": "FULL_CHAIN_PASS_E01_E10_PLUS_E05A_E05B",
     "P0_OPENAI": "INCOMPATIBLE",
     "P0_TOTAL": "BLOCKED"
   },
@@ -17,7 +17,7 @@
     "E08": "PASS_ISOLATED_PROFILE",
     "E09": "PASS",
     "E10": "PASS",
-    "E05_NORMAL": "NOT_TESTED_QUOTA_EXHAUSTED"
+    "E05_NORMAL": "PASS_real_marker_inference_200"
   },
   "e05Evidence": {
     "modelTests": [
@@ -66,5 +66,15 @@
     "Go/Zen 刷新竞态",
     "网络请求取消",
     "真实插件生命周期测试"
-  ]
+  ],
+  "e05b": {
+    "model": "gpt-6-sol",
+    "httpStatus": 200,
+    "markerMatched": true,
+    "responseCharacters": 43,
+    "responseSha256": "9eb43f38f14a2040cd0cbe0baa7cf245c5e315e43b9977240db427d48d580603",
+    "usageReceived": true,
+    "streamChunks": 31,
+    "evidence": "docs/validation/p0-e05b/"
+  }
 }
