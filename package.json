@@ -1,15 +1,18 @@
 {
   "name": "dsh-opencode-live-models",
-  "version": "0.6.0",
-  "description": "Keep the OpenCode Go model catalog current, with the gateway's session header and prompt cache in place, without waiting for a pi-ai release",
+  "version": "0.11.3",
+  "description": "Live model catalogs, native model selection, ChatGPT and OpenCode Console sign-in, subscription usage and Zen balances",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "test": "node probe.mjs && node docs/validation/quota-parse.test.mjs"
+    "test": "node probe.mjs && node --test test/*.test.mjs test/subscription/*.test.mjs"
   },
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -33,6 +36,23 @@
     },
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings-account",
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ],
+      "platform": "web"
     }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "react": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "react": { "optional": true }
   }
 }

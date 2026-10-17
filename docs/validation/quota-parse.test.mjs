@@ -1,4 +1,4 @@
-/** P0-Q quota parsing regression: pure functions over fixtures; no network, no credentials, no DSH. Run: node docs/validation/quota-parse.test.mjs */
+/** Historical P0-Q parser experiment, excluded from CI. Production regression coverage lives in test/subscription/normalize.test.mjs. */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

@@ -2747,6 +2747,168 @@ await freshStateAsync()
   void tick
 }
 
+// ── 8.10 原生 Codex：复用目录机制，不携带 OpenCode 请求策略 ────────────────
+{
+  const mainFetch = globalThis.fetch
+  const CODEX_DIRECTORY = fixture('pi-dev-openai-codex.json')
+  const CODEX_INSTALLED = Object.values(fixture('openai-codex-0.87.1.json')).flatMap(group => Object.values(group))
+  const ZEN_DIRECTORY = fixture('pi-dev-opencode.json')
+  const ZEN_INSTALLED = Object.values(fixture('opencode-0.87.1.json')).flatMap(group => Object.values(group))
+  const CODEX_URL = 'https://pi.dev/api/models/providers/openai-codex?types=chat'
+  const GO_GOOGLE = fixture('pi-dev-opencode-go-google.json')
+  const withLatest = (models, id) => mode === 'updated'
+    ? [...models, { ...models.find(model => model.type === 'chat'), id, name: id }]
+    : models
+  const requests = []
+  const logs = []
+  const disposers = []
+  const dispatched = []
+  let mode = 'live'
+  let tick
+  let intervalMs
+  globalThis.setInterval = (fn, ms) => { tick = fn; intervalMs = ms; return { unref() {} } }
+  globalThis.fetch = async (url, init) => {
+    const u = String(url)
+    requests.push({ url: u, headers: init?.headers })
+    if (u === CODEX_URL) {
+      if (mode === 'offline') throw new Error('simulated Codex catalog outage')
+      if (mode === '304') return new Response(null, { status: 304 })
+      const models = CODEX_DIRECTORY.map(model => {
+        if (model.id !== 'gpt-6.1-sol') return model
+        // Synthetic control-plane tampering must never override native routing.
+        if (mode === 'untrusted') return { ...model, provider: 'opencode-go', baseUrl: 'https://untrusted.example', headers: { authorization: '<token>' } }
+        if (mode === 'malformed') return { ...model, maxTokens: null }
+        return model
+      })
+      return new Response(JSON.stringify(withLatest(models, 'fixture-latest-codex')), { status: 200, headers: { etag: '"codex-fixture"' } })
+    }
+    if (u.includes('/providers/opencode-go')) return new Response(JSON.stringify(mode === 'updated' ? [...withLatest(PI_DEV, 'fixture-latest-go'), GO_GOOGLE] : PI_DEV))
+    if (u.includes('/providers/opencode?')) return new Response(JSON.stringify(withLatest(ZEN_DIRECTORY, 'fixture-latest-zen')))
+    if (u === 'https://opencode.ai/zen/go/v1/models') return new Response(JSON.stringify(liveData))
+    if (u === 'https://opencode.ai/zen/v1/models') return new Response(JSON.stringify(fixture('zen-models.json')))
+    throw new Error(`unexpected fetch: ${u}`)
+  }
+
+  const auth = { oauth: 'native-provider-auth' }
+  const raw = {
+    id: 'openai-codex', auth,
+    getModels: () => CODEX_INSTALLED.slice(),
+    stream(model, context, options) { dispatched.push({ receiver: this, model }); return options },
+    streamSimple(model, context, options) { dispatched.push({ receiver: this, model }); return options },
+  }
+  class CodexModels {
+    constructor() { this._providerId = raw.id; this.provider = raw }
+    getProvider(id) { return id === raw.id ? this.provider : undefined }
+    setProvider(provider) { this.provider = provider }
+    getModels(id) { return this.getProvider(id)?.getModels() ?? [] }
+    mergedModels() { return this.getModels(raw.id) }
+    stream(model, context, options) { return this.getProvider(model.provider).stream(model, context, options) }
+    streamSimple(model, context, options) { return this.getProvider(model.provider).streamSimple(model, context, options) }
+  }
+  const originalStream = CodexModels.prototype.stream
+  const codex = new CodexModels()
+  const go = makeColl('opencode-go', () => INSTALLED.slice())
+  const zen = makeColl('opencode', () => ZEN_INSTALLED.slice())
+  const makeCtx = () => ({
+    llm: { adapters: collAdapter(go, zen, codex) },
+    logger: {
+      info: (...args) => logs.push(['info', args.join(' ')]),
+      warn: (...args) => logs.push(['warn', args.join(' ')]),
+      debug: (...args) => logs.push(['debug', args.join(' ')]),
+    },
+    emit() {}, on() {},
+    effect(fn) { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose) },
+  })
+  const sol = () => codex.mergedModels().find(model => model.id === 'gpt-6.1-sol')
+  const refresh = async () => { tick(); await wait() }
+  await freshStateAsync()
+  const native = await import('./lib/index.js?native-codex')
+  await mount(native, makeCtx())
+
+  ok('Codex 固件对应真实升级缺口：pi-ai 0.87.1 未收录 6.1 Sol，上游已收录',
+    !CODEX_INSTALLED.some(model => model.id === 'gpt-6.1-sol') && CODEX_DIRECTORY.some(model => model.id === 'gpt-6.1-sol'))
+  ok('原生 Codex 目录补齐 6.1 Sol，并保留全部已安装模型',
+    !!sol() && CODEX_INSTALLED.every(model => codex.mergedModels().some(current => current.id === model.id))
+      && codex.mergedModels().length === CODEX_DIRECTORY.length,
+    `${CODEX_INSTALLED.length} -> ${codex.mergedModels().length}`)
+  ok('Codex 使用原生协议和固定官方端点',
+    sol()?.provider === 'openai-codex' && sol()?.api === 'openai-codex-responses'
+      && sol()?.baseUrl === 'https://chatgpt.com/backend-api')
+  ok('三路同时刷新：Codex 只请求公开 Pi 目录，没有账号名单或凭据请求',
+    requests.length === 5 && requests.filter(request => request.url === CODEX_URL).length === 1
+      && requests.every(request => !Object.keys(request.headers ?? {}).some(key => /authorization|cookie/i.test(key))),
+    `${requests.length} 个公开目录/名单请求`)
+  ok('Codex、Go、Zen 的模型与协议各归各的',
+    codex.mergedModels().every(model => model.provider === 'openai-codex' && model.api === 'openai-codex-responses')
+      && go.mergedModels().every(model => model.provider === 'opencode-go')
+      && zen.mergedModels().every(model => model.provider === 'opencode')
+      && !go.mergedModels().some(model => model.id === 'gpt-6.1-sol'))
+
+  const options = { sessionId: 'codex-probe', headers: { 'x-test': 'retained' } }
+  ok('Codex 的两个调用入口均透传原选项，不注入 OpenCode 会话头或缓存策略',
+    codex.stream(sol(), {}, options) === options && codex.streamSimple(sol(), {}, options) === options
+      && codex.streamSimple({ ...sol(), id: 'deepseek-codex-regression' }, {}, options) === options
+      && native.isOpencodeRoute(sol()) === false)
+  ok('Codex dispatch 仍通过原生 provider，OAuth 对象保持不变',
+    codex.getProvider('openai-codex').auth === auth && dispatched.every(call => call.receiver === raw))
+
+  ok('三路模型目录按五分钟周期刷新', intervalMs === 5 * 60 * 1000)
+  mode = 'updated'
+  await refresh()
+  ok('定时刷新能将三路新增模型发布到已存在的选择器，无需重启',
+    go.mergedModels().some(model => model.id === 'fixture-latest-go')
+      && zen.mergedModels().some(model => model.id === 'fixture-latest-zen')
+      && codex.mergedModels().some(model => model.id === 'fixture-latest-codex'))
+  ok('Go 新增 Google 协议条目保留明确告警，避免当前原生 provider 无法调用',
+    !go.mergedModels().some(model => model.id === GO_GOOGLE.id)
+      && logs.some(([level, text]) => level === 'warn' && text.includes('unsupported transport protocols') && text.includes(GO_GOOGLE.id)))
+  await refresh()
+  ok('协议兼容告警不会在每次轮询时重复刷屏',
+    logs.filter(([level, text]) => level === 'warn' && text.includes('unsupported transport protocols') && text.includes(GO_GOOGLE.id)).length === 1)
+  mode = 'live'
+  await refresh()
+
+  mode = 'untrusted'
+  await refresh()
+  ok('Codex 远端 provider/baseUrl/headers 被清理，无法篡改路由或认证',
+    sol()?.provider === 'openai-codex' && sol()?.baseUrl === 'https://chatgpt.com/backend-api' && sol()?.headers === undefined)
+  mode = 'malformed'
+  await refresh()
+  ok('Codex 不完整描述符被整份拒绝，6.1 Sol 保留上一轮正常能力',
+    sol()?.maxTokens === CODEX_DIRECTORY.find(model => model.id === 'gpt-6.1-sol').maxTokens
+      && logs.some(([level, text]) => level === 'warn' && text.includes('OpenAI Codex catalog refresh failed')))
+  mode = '304'
+  await refresh()
+  ok('Codex 复用 ETag 条件请求，304 保留完整目录',
+    requests.filter(request => request.url === CODEX_URL).at(-1)?.headers?.['if-none-match'] === '"codex-fixture"'
+      && !!sol() && logs.some(([, text]) => text.includes('OpenAI Codex catalog unchanged (304)')))
+  mode = 'offline'
+  await refresh()
+  ok('Codex 目录断网保留上一轮数据，Go/Zen 仍正常刷新，无 Codex 名单告警',
+    !!sol() && go.mergedModels().length === EXPECTED_UNION_SIZE
+      && !logs.some(([level, text]) => level === 'warn' && text.includes('OpenAI Codex roster')))
+
+  await globalThis[STATE_KEY].cacheWriteTail
+  const payload = JSON.parse(readFileSync(join(process.env.DSH_PROFILE_DIR, 'opencode-live-models-catalog.json'), 'utf8'))
+  ok('Codex 目录与 ETag 使用独立缓存条目，Go/Zen 缓存同时保留',
+    cachedScope(payload, 'openai-codex')?.models?.some(model => model.id === 'gpt-6.1-sol')
+      && cachedScope(payload, 'openai-codex')?.etag === '"codex-fixture"'
+      && !!cachedScope(payload, 'opencode') && !!cachedScope(payload, 'opencode-go'))
+  for (const dispose of disposers.splice(0)) dispose()
+  ok('卸载恢复 Codex provider 与 Models 原型，退回安装时的目录',
+    codex.getProvider('openai-codex') === raw && CodexModels.prototype.stream === originalStream
+      && !sol() && codex.mergedModels().length === CODEX_INSTALLED.length)
+
+  // Preserve the disk cache while dropping process state to simulate restart.
+  delete globalThis[STATE_KEY]
+  const restarted = await import('./lib/index.js?native-codex-offline-restart')
+  await mount(restarted, makeCtx())
+  ok('Codex 重启后断网仍从磁盘恢复 6.1 Sol，且不进行名单过滤',
+    !!sol() && globalThis[STATE_KEY].scopes.get('openai-codex').liveModelIds === null)
+  for (const dispose of disposers.splice(0)) dispose()
+  globalThis.fetch = mainFetch
+}
+
 // ── 9. 继承旧版本状态：缺失字段必须补齐 ────────────────────────────────────
 //
 // Last, on purpose: it swaps the shared slot for a hand-made 0.1.5 state and

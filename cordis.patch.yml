@@ -4,7 +4,7 @@
 #
 # The plugin reaches the running pi-ai instance through `ctx.llm.adapters`, a
 # TypeScript-private field that is an ordinary Map at runtime, and imports
-# nothing: the host can resolve `@deepseek-ai/*` for a profile plugin, but this
+# no host packages at mount: the host can resolve them for a profile plugin, but this
 # module must also load in a bare Node process for its test suite, where it
 # cannot. See the module header.
 - insert:
